@@ -1,5 +1,7 @@
 import express from "express";
 import bodyParser from "body-parser";
+import Tesseract from "tesseract.js";
+import multer from "multer";
 import Groq from "groq-sdk";
 import dotenv from "dotenv";
 import cors from "cors";
@@ -86,3 +88,52 @@ app.post("/api/insights", async (req, res) => {
   }
 });
 
+
+
+
+
+const upload = multer({ storage: multer.memoryStorage() });
+
+app.post("/api/scan", upload.single("file"), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "No file uploaded" });
+    }
+
+    console.log("📷 Received image for scanning...");
+
+    const ocrResult = await Tesseract.recognize(req.file.buffer, "eng");
+    const rawText = ocrResult.data.text.trim();
+
+    if (!rawText) {
+      return res.status(400).json({ error: "No text detected in image" });
+    }
+
+    // send to Groq
+    const prompt = `
+      Extract structured information from this prescription text:
+      "${rawText}"
+      Return JSON with keys: drug_name, dosage, frequency, instructions.
+    `;
+
+    const completion = await groq.chat.completions.create({
+      model: "llama-3.1-8b-instant",
+      messages: [{ role: "user", content: prompt }],
+    });
+
+    const aiResponse =
+      completion.choices[0]?.message?.content || "No details extracted";
+
+    let structured;
+    try {
+      structured = JSON.parse(aiResponse);
+    } catch {
+      structured = { extracted_text: aiResponse };
+    }
+
+    res.json({ text: aiResponse, structured, rawText });
+  } catch (error) {
+    console.error("❌ Scan error:", error);
+    res.status(500).json({ error: "Failed to process prescription image" });
+  }
+});
