@@ -110,11 +110,23 @@ app.post("/api/scan", upload.single("file"), async (req, res) => {
     }
 
     // send to Groq
-    const prompt = `
+   /* const prompt = `
       Extract structured information from this prescription text:
       "${rawText}"
       Return JSON with keys: drug_name, dosage, frequency, instructions.
-    `;
+    `; */
+
+    const prompt = `
+You are a friendly AI medication assistant.
+Here is OCR text from a prescription: """${rawText}"""
+
+Your task:
+1. Try to extract possible drug names, dosage, frequency, and instructions.
+2. If parts are unclear, don't output "No clear information". Instead, say "This section is hard to read" or "unclear text".
+3. Always end with a simple summary in plain English for the patient.
+4. Keep it concise and reassuring.
+Return your answer as a short human-readable explanation, not raw JSON.
+`;
 
     const completion = await groq.chat.completions.create({
       model: "llama-3.1-8b-instant",
