@@ -167,14 +167,13 @@ app.post("/api/transcribe", upload.single("file"), async (req, res) => {
     form.append("response_format", "json");     // default is json
 
     // Call Groq’s transcription endpoint
-    const transcriptionResponse = await groq.fetch(
-      "POST",
-      "/openai/v1/audio/transcriptions",
-      {
-        body: form,
-        headers: form.getHeaders(), // includes multipart boundary
-      }
-    );
+    const transcriptionResponse = await groq.audio.transcriptions.create({
+  file: req.file.buffer,
+  filename: req.file.originalname || "audio.m4a",
+  model: "whisper-large-v3",
+  response_format: "json",
+});
+
 
     // transcriptionResponse should have { text, ... }
     const transcript = transcriptionResponse.text;
