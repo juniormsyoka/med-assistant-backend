@@ -14,17 +14,13 @@ dotenv.config();
 
 const app = express();
 app.use(bodyParser.json());
-app.use(cors());
-
-// Ensure uploads folder exists
-if (!fs.existsSync("uploads")) {
-  fs.mkdirSync("uploads");
-}
+app.use(cors()); // ✅ allow requests from any origin (safe here)
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-// Multer disk storage
-const upload = multer({ dest: "uploads/" });
+if (!fs.existsSync("uploads")) {
+  fs.mkdirSync("uploads");
+}
 
 // Test endpoint
 app.get("/api/test", (req, res) => {
@@ -38,7 +34,7 @@ app.post("/api/chat", async (req, res) => {
 
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
   res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("X-Accel-Buffering", "no");
+  res.setHeader("X-Accel-Buffering", "no"); // disable proxy buffering
 
   console.log("Received message:", message);
 
@@ -46,14 +42,16 @@ app.post("/api/chat", async (req, res) => {
     const prompt = `You are a helpful medication assistant. Respond to this: "${message}"`;
 
     const stream = await groq.chat.completions.create({
-      model: "llama-3.1-8b-instant",
+      model: "llama-3.1-8b-instant", // Groq’s fast free model
       messages: [{ role: "user", content: prompt }],
       stream: true,
     });
 
     for await (const chunk of stream) {
       const text = chunk.choices[0]?.delta?.content || "";
-      if (text) res.write(text);
+      if (text) {
+        res.write(text);
+      }
     }
 
     res.end();
@@ -63,7 +61,9 @@ app.post("/api/chat", async (req, res) => {
   }
 });
 
-// Insights endpoint
+
+
+// server.js (add this endpoint)
 app.post("/api/insights", async (req, res) => {
   try {
     const { stats, logs } = req.body;
@@ -91,7 +91,15 @@ app.post("/api/insights", async (req, res) => {
   }
 });
 
-// Scan endpoint
+
+
+
+
+//const upload = multer({ storage: multer.memoryStorage() });
+
+
+const upload = multer({ dest: "uploads/" });
+
 app.post("/api/scan", upload.single("file"), async (req, res) => {
   try {
     if (!req.file) {
@@ -100,16 +108,19 @@ app.post("/api/scan", upload.single("file"), async (req, res) => {
 
     console.log("📷 Received image for scanning...");
 
-    const ocrResult = await Tesseract.recognize(req.file.path, "eng");
+    const ocrResult = await Tesseract.recognize(req.file.buffer, "eng");
     const rawText = ocrResult.data.text.trim();
-
-    fs.unlink(req.file.path, err => {
-      if (err) console.error("Failed to delete temp file:", err);
-    });
 
     if (!rawText) {
       return res.status(400).json({ error: "No text detected in image" });
     }
+
+    // send to Groq
+   /* const prompt = `
+      Extract structured information from this prescription text:
+      "${rawText}"
+      Return JSON with keys: drug_name, dosage, frequency, instructions.
+    `; */
 
     const prompt = `
 You are a friendly AI medication assistant.
@@ -117,7 +128,7 @@ Here is OCR text from a prescription: """${rawText}"""
 
 Your task:
 1. Try to extract possible drug names, dosage, frequency, and instructions.
-2. If parts are unclear, say "This section is hard to read" or "unclear text".
+2. If parts are unclear, don't output "No clear information". Instead, say "This section is hard to read" or "unclear text".
 3. Always end with a simple summary in plain English for the patient.
 4. Keep it concise and reassuring.
 Return your answer as a short human-readable explanation, not raw JSON.
@@ -128,7 +139,8 @@ Return your answer as a short human-readable explanation, not raw JSON.
       messages: [{ role: "user", content: prompt }],
     });
 
-    const aiResponse = completion.choices[0]?.message?.content || "";
+    const aiResponse =
+      completion.choices[0]?.message?.content || "No details extracted";
 
     let structured;
     try {
@@ -144,7 +156,8 @@ Return your answer as a short human-readable explanation, not raw JSON.
   }
 });
 
-// ✅ Fixed Transcribe endpoint
+
+
 app.post("/api/transcribe", upload.single("file"), async (req, res) => {
   try {
     if (!req.file) {
@@ -167,7 +180,7 @@ app.post("/api/transcribe", upload.single("file"), async (req, res) => {
       }
     );
 
-    fs.unlink(filePath, err => {
+    fs.unlink(filePath, (err) => {
       if (err) console.error("Failed to delete temp file:", err);
     });
 
@@ -205,6 +218,10 @@ If information is missing, set fields to null.
   }
 });
 
+
+
+
+// ✅ Use dynamic port for Render
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`AI assistant backend running on port ${PORT}`);
