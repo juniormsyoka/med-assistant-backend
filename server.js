@@ -14,9 +14,17 @@ dotenv.config();
 
 const app = express();
 app.use(bodyParser.json());
-app.use(cors()); // ✅ allow requests from any origin (safe here)
+app.use(cors());
+
+// Ensure uploads folder exists
+if (!fs.existsSync("uploads")) {
+  fs.mkdirSync("uploads");
+}
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+
+// Multer disk storage
+const upload = multer({ dest: "uploads/" });
 
 // Test endpoint
 app.get("/api/test", (req, res) => {
@@ -30,7 +38,7 @@ app.post("/api/chat", async (req, res) => {
 
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
   res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("X-Accel-Buffering", "no"); // disable proxy buffering
+  res.setHeader("X-Accel-Buffering", "no");
 
   console.log("Received message:", message);
 
@@ -38,16 +46,14 @@ app.post("/api/chat", async (req, res) => {
     const prompt = `You are a helpful medication assistant. Respond to this: "${message}"`;
 
     const stream = await groq.chat.completions.create({
-      model: "llama-3.1-8b-instant", // Groq’s fast free model
+      model: "llama-3.1-8b-instant",
       messages: [{ role: "user", content: prompt }],
       stream: true,
     });
 
     for await (const chunk of stream) {
       const text = chunk.choices[0]?.delta?.content || "";
-      if (text) {
-        res.write(text);
-      }
+      if (text) res.write(text);
     }
 
     res.end();
@@ -57,9 +63,7 @@ app.post("/api/chat", async (req, res) => {
   }
 });
 
-
-
-// server.js (add this endpoint)
+// Insights endpoint
 app.post("/api/insights", async (req, res) => {
   try {
     const { stats, logs } = req.body;
@@ -87,12 +91,7 @@ app.post("/api/insights", async (req, res) => {
   }
 });
 
-
-
-
-
-const upload = multer({ storage: multer.memoryStorage() });
-
+// Scan endpoint
 app.post("/api/scan", upload.single("file"), async (req, res) => {
   try {
     if (!req.file) {
@@ -101,19 +100,16 @@ app.post("/api/scan", upload.single("file"), async (req, res) => {
 
     console.log("📷 Received image for scanning...");
 
-    const ocrResult = await Tesseract.recognize(req.file.buffer, "eng");
+    const ocrResult = await Tesseract.recognize(req.file.path, "eng");
     const rawText = ocrResult.data.text.trim();
+
+    fs.unlink(req.file.path, err => {
+      if (err) console.error("Failed to delete temp file:", err);
+    });
 
     if (!rawText) {
       return res.status(400).json({ error: "No text detected in image" });
     }
-
-    // send to Groq
-   /* const prompt = `
-      Extract structured information from this prescription text:
-      "${rawText}"
-      Return JSON with keys: drug_name, dosage, frequency, instructions.
-    `; */
 
     const prompt = `
 You are a friendly AI medication assistant.
@@ -121,7 +117,7 @@ Here is OCR text from a prescription: """${rawText}"""
 
 Your task:
 1. Try to extract possible drug names, dosage, frequency, and instructions.
-2. If parts are unclear, don't output "No clear information". Instead, say "This section is hard to read" or "unclear text".
+2. If parts are unclear, say "This section is hard to read" or "unclear text".
 3. Always end with a simple summary in plain English for the patient.
 4. Keep it concise and reassuring.
 Return your answer as a short human-readable explanation, not raw JSON.
@@ -132,8 +128,7 @@ Return your answer as a short human-readable explanation, not raw JSON.
       messages: [{ role: "user", content: prompt }],
     });
 
-    const aiResponse =
-      completion.choices[0]?.message?.content || "No details extracted";
+    const aiResponse = completion.choices[0]?.message?.content || "";
 
     let structured;
     try {
@@ -149,36 +144,35 @@ Return your answer as a short human-readable explanation, not raw JSON.
   }
 });
 
-
-
+// ✅ Fixed Transcribe endpoint
 app.post("/api/transcribe", upload.single("file"), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: "No audio file uploaded" });
     }
 
-    // Prepare the audio file buffer / form data
+    const filePath = req.file.path;
+
     const form = new FormData();
-    form.append("file", req.file.buffer, {
-      filename: req.file.originalname || "audio.m4a",
-      contentType: req.file.mimetype || "audio/m4a",
+    form.append("file", fs.createReadStream(filePath));
+    form.append("model", "whisper-large-v3");
+    form.append("response_format", "json");
+
+    const transcriptionResponse = await groq.fetch(
+      "POST",
+      "/openai/v1/audio/transcriptions",
+      {
+        body: form,
+        headers: form.getHeaders(),
+      }
+    );
+
+    fs.unlink(filePath, err => {
+      if (err) console.error("Failed to delete temp file:", err);
     });
-    form.append("model", "whisper-large-v3");  // or whisper-large-v3-turbo
-    form.append("response_format", "json");     // default is json
 
-    // Call Groq’s transcription endpoint
-    const transcriptionResponse = await groq.audio.transcriptions.create({
-  file: req.file.buffer,
-  filename: req.file.originalname || "audio.m4a",
-  model: "whisper-large-v3",
-  response_format: "json",
-});
+    const transcript = transcriptionResponse.text || "";
 
-
-    // transcriptionResponse should have { text, ... }
-    const transcript = transcriptionResponse.text;
-
-    // Now do NER extraction with Groq chat
     const nerPrompt = `
 You are a clinical assistant. Return ONLY valid JSON containing:
 {
@@ -206,15 +200,11 @@ If information is missing, set fields to null.
 
     return res.json({ transcript, structured });
   } catch (err) {
-   // console.error("Transcribe error:", err);
-   console.error("Transcribe error:", err?.message || err);
+    console.error("Transcribe error:", err?.message || err);
     return res.status(500).json({ error: "Transcription failed" });
   }
 });
 
-
-
-// ✅ Use dynamic port for Render
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`AI assistant backend running on port ${PORT}`);
