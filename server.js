@@ -18,10 +18,6 @@ app.use(cors()); // ✅ allow requests from any origin (safe here)
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-if (!fs.existsSync("uploads")) {
-  fs.mkdirSync("uploads");
-}
-
 // Test endpoint
 app.get("/api/test", (req, res) => {
   res.json({ message: "Server is working!", timestamp: new Date() });
@@ -95,10 +91,7 @@ app.post("/api/insights", async (req, res) => {
 
 
 
-//const upload = multer({ storage: multer.memoryStorage() });
-
-
-const upload = multer({ dest: "uploads/" });
+const upload = multer({ storage: multer.memoryStorage() });
 
 app.post("/api/scan", upload.single("file"), async (req, res) => {
   try {
@@ -164,28 +157,29 @@ app.post("/api/transcribe", upload.single("file"), async (req, res) => {
       return res.status(400).json({ error: "No audio file uploaded" });
     }
 
-    const filePath = req.file.path;
-
+    // Prepare the audio file buffer / form data
     const form = new FormData();
-    form.append("file", fs.createReadStream(filePath));
-    form.append("model", "whisper-large-v3");
-    form.append("response_format", "json");
+    form.append("file", req.file.buffer, {
+      filename: req.file.originalname || "audio.m4a",
+      contentType: req.file.mimetype || "audio/m4a",
+    });
+    form.append("model", "whisper-large-v3");  // or whisper-large-v3-turbo
+    form.append("response_format", "json");     // default is json
 
+    // Call Groq’s transcription endpoint
     const transcriptionResponse = await groq.fetch(
       "POST",
       "/openai/v1/audio/transcriptions",
       {
         body: form,
-        headers: form.getHeaders(),
+        headers: form.getHeaders(), // includes multipart boundary
       }
     );
 
-    fs.unlink(filePath, (err) => {
-      if (err) console.error("Failed to delete temp file:", err);
-    });
+    // transcriptionResponse should have { text, ... }
+    const transcript = transcriptionResponse.text;
 
-    const transcript = transcriptionResponse.text || "";
-
+    // Now do NER extraction with Groq chat
     const nerPrompt = `
 You are a clinical assistant. Return ONLY valid JSON containing:
 {
@@ -212,12 +206,11 @@ If information is missing, set fields to null.
     }
 
     return res.json({ transcript, structured });
-  } catch (err) {
-    console.error("Transcribe error:", err?.message || err);
+  } catch  {
+    console.error("Transcribe error:", err);
     return res.status(500).json({ error: "Transcription failed" });
   }
 });
-
 
 
 
