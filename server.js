@@ -4,6 +4,10 @@ import Tesseract from "tesseract.js";
 import multer from "multer";
 import Groq from "groq-sdk";
 import dotenv from "dotenv";
+import fs from "fs";
+import path from "path";
+import axios from "axios";
+import FormData from "form-data";
 import cors from "cors";
 
 dotenv.config();
@@ -53,11 +57,6 @@ app.post("/api/chat", async (req, res) => {
   }
 });
 
-// ✅ Use dynamic port for Render
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`AI assistant backend running on port ${PORT}`);
-});
 
 
 // server.js (add this endpoint)
@@ -148,4 +147,75 @@ Return your answer as a short human-readable explanation, not raw JSON.
     console.error("❌ Scan error:", error);
     res.status(500).json({ error: "Failed to process prescription image" });
   }
+});
+
+
+
+app.post("/api/transcribe", upload.single("file"), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "No audio file uploaded" });
+    }
+
+    // Prepare the audio file buffer / form data
+    const form = new FormData();
+    form.append("file", req.file.buffer, {
+      filename: req.file.originalname || "audio.m4a",
+      contentType: req.file.mimetype || "audio/m4a",
+    });
+    form.append("model", "whisper-large-v3");  // or whisper-large-v3-turbo
+    form.append("response_format", "json");     // default is json
+
+    // Call Groq’s transcription endpoint
+    const transcriptionResponse = await groq.fetch(
+      "POST",
+      "/openai/v1/audio/transcriptions",
+      {
+        body: form,
+        headers: form.getHeaders(), // includes multipart boundary
+      }
+    );
+
+    // transcriptionResponse should have { text, ... }
+    const transcript = transcriptionResponse.text;
+
+    // Now do NER extraction with Groq chat
+    const nerPrompt = `
+You are a clinical assistant. Return ONLY valid JSON containing:
+{
+  "symptoms": [ { "name": string, "severity": string | null, "duration": string | null, "onset": string | null, "modifiers": string | null } ],
+  "summary": string
+}
+Here is the transcript: """${transcript}"""
+If information is missing, set fields to null.
+`;
+
+    const nerCompletion = await groq.chat.completions.create({
+      model: "llama-3.1-8b-instant",
+      messages: [{ role: "user", content: nerPrompt }],
+      temperature: 0,
+    });
+
+    const aiRespText = nerCompletion.choices[0]?.message?.content || "";
+
+    let structured;
+    try {
+      structured = JSON.parse(aiRespText);
+    } catch (e) {
+      structured = { extracted_text: aiRespText };
+    }
+
+    return res.json({ transcript, structured });
+  } catch  {
+    console.error("Transcribe error:", err);
+    return res.status(500).json({ error: "Transcription failed" });
+  }
+});
+
+
+
+// ✅ Use dynamic port for Render
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`AI assistant backend running on port ${PORT}`);
 });
