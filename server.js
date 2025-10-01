@@ -206,8 +206,9 @@ If information is missing, set fields to null.
     }
 
     return res.json({ transcript, structured });
-  } catch  {
-    console.error("Transcribe error:", err);
+  } catch (err) {
+   // console.error("Transcribe error:", err);
+   console.error("Transcribe error:", err?.message || err);
     return res.status(500).json({ error: "Transcription failed" });
   }
 });
