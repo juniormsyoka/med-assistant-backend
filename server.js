@@ -9,7 +9,6 @@ import path from "path";
 import axios from "axios";
 import FormData from "form-data";
 import cors from "cors";
-import OpenAI from "openai";
 
 dotenv.config();
 
@@ -92,12 +91,6 @@ app.post("/api/insights", async (req, res) => {
 
 
 
-
-
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
 const upload = multer({ storage: multer.memoryStorage() });
 
 app.post("/api/scan", upload.single("file"), async (req, res) => {
@@ -106,56 +99,55 @@ app.post("/api/scan", upload.single("file"), async (req, res) => {
       return res.status(400).json({ error: "No file uploaded" });
     }
 
-    console.log("📷 Received image for analysis...");
+    console.log("📷 Received image for scanning...");
 
-    // Convert the uploaded image to base64
-    const base64Image = req.file.buffer.toString("base64");
-    const imageUrl = `data:${req.file.mimetype};base64,${base64Image}`;
+    const ocrResult = await Tesseract.recognize(req.file.buffer, "eng");
+    const rawText = ocrResult.data.text.trim();
 
-    // Use GPT-4o (Vision) to interpret the prescription directly
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini", // or "gpt-4o" for more detailed reasoning
-      messages: [
-        {
-          role: "system",
-          content: "You are a friendly AI medication assistant.",
-        },
-        {
-          role: "user",
-          content: [
-            {
-              type: "text",
-              text: `This is a photo of a medical prescription.
-Please identify:
-1. Drug names, dosage, and frequency (if visible)
-2. Any instructions (e.g. take with food)
-3. If parts are unclear, note that they're hard to read
-Then, provide a short, reassuring summary for the patient.`,
-            },
-            {
-              type: "image_url",
-              image_url: imageUrl,
-            },
-          ],
-        },
-      ],
+    if (!rawText) {
+      return res.status(400).json({ error: "No text detected in image" });
+    }
+
+    // send to Groq
+   /* const prompt = `
+      Extract structured information from this prescription text:
+      "${rawText}"
+      Return JSON with keys: drug_name, dosage, frequency, instructions.
+    `; */
+
+    const prompt = `
+You are a friendly AI medication assistant.
+Here is OCR text from a prescription: """${rawText}"""
+
+Your task:
+1. Try to extract possible drug names, dosage, frequency, and instructions.
+2. If parts are unclear, don't output "No clear information". Instead, say "This section is hard to read" or "unclear text".
+3. Always end with a simple summary in plain English for the patient.
+4. Keep it concise and reassuring.
+Return your answer as a short human-readable explanation, not raw JSON.
+`;
+
+    const completion = await groq.chat.completions.create({
+      model: "llama-3.1-8b-instant",
+      messages: [{ role: "user", content: prompt }],
     });
 
-    const aiResponse = completion.choices[0]?.message?.content || "No information found.";
+    const aiResponse =
+      completion.choices[0]?.message?.content || "No details extracted";
 
-    res.json({
-      success: true,
-      text: aiResponse,
-    });
+    let structured;
+    try {
+      structured = JSON.parse(aiResponse);
+    } catch {
+      structured = { extracted_text: aiResponse };
+    }
+
+    res.json({ text: aiResponse, structured, rawText });
   } catch (error) {
-    console.error("❌ Vision scan error:", error);
-    res.status(500).json({
-      success: false,
-      error: "Failed to process prescription image",
-    });
+    console.error("❌ Scan error:", error);
+    res.status(500).json({ error: "Failed to process prescription image" });
   }
 });
-
 
 
 
