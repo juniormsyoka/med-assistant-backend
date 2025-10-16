@@ -9,6 +9,7 @@ import path from "path";
 import axios from "axios";
 import FormData from "form-data";
 import cors from "cors";
+import OpenAI from "openai";
 
 dotenv.config();
 
