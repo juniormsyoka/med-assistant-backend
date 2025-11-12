@@ -131,7 +131,7 @@ app.post("/api/scan", upload.single("file"), async (req, res) => {
   }
 });
 
-// Updated transcribe endpoint using Gemini
+// server.js - Updated transcribe endpoint using Gemini
 app.post("/api/transcribe", upload.single("file"), async (req, res) => {
   try {
     if (!req.file) {
@@ -140,48 +140,59 @@ app.post("/api/transcribe", upload.single("file"), async (req, res) => {
 
     console.log("🎤 Processing audio with Gemini...");
 
-    // For audio, we'll use a different approach since Gemini's direct audio support may vary
-    // You might want to use Google Speech-to-Text API first, then Gemini for analysis
-    // For now, let's use Gemini with a text description of having audio data
+    const model = genAI.getGenerativeModel({ 
+      model: "gemini-1.5-flash", // or "gemini-1.5-pro" for better accuracy
+    });
+
+    // Convert audio to base64
+    const audioBase64 = req.file.buffer.toString('base64');
     
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-
     const prompt = `
-      You are a medical assistant analyzing a patient's voice message about health concerns.
-
-      Please provide:
-      1. A summary of the main health concerns mentioned
-      2. Any symptoms described (with details if available)
-      3. Medications or treatments discussed
-      4. General medical advice based on the description
-
-      Since I'm providing this as text rather than direct audio, please structure your response
-      as if you're analyzing a patient's health concerns.
-
-      Format your response in a caring, professional manner.
+      Transcribe this audio message exactly as spoken. 
+      Provide ONLY the raw transcription without any additional commentary, analysis, or formatting.
+      
+      If the audio contains medical terms, transcribe them accurately.
+      If there's background noise or unclear speech, do your best to transcribe what you can hear.
+      
+      Transcription:
     `;
 
-    // Note: For actual audio transcription, you'd want to use:
-    // Google Cloud Speech-to-Text API first, then pass the transcript to Gemini
-    // Let me know if you want help setting up that integration
-
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    const analysis = response.text();
-
-    // For now, we'll return a structured response
-    res.json({ 
-      transcript: "Audio processed with Gemini medical analysis",
-      structured: { 
-        analysis: analysis,
-        summary: "Medical concerns analyzed by Gemini",
-        symptoms: [],
-        medications: []
+    // Create the audio part for Gemini
+    const audioPart = {
+      inlineData: {
+        mimeType: req.file.mimetype, // e.g., 'audio/m4a', 'audio/mp4', etc.
+        data: audioBase64
       }
+    };
+
+    // Generate content with both audio and text prompt
+    const result = await model.generateContent([prompt, audioPart]);
+    const response = await result.response;
+    const transcription = response.text();
+
+    console.log("✅ Gemini transcription result:", transcription);
+
+    res.json({ 
+      transcript: transcription,
+      success: true,
+      rawText: transcription
     });
+    
   } catch (error) {
-    console.error("❌ Gemini transcribe error:", error);
-    res.status(500).json({ error: "Failed to process audio with Gemini" });
+    console.error("❌ Gemini transcription error:", error);
+    
+    // More detailed error information
+    let errorMessage = "Failed to transcribe audio";
+    if (error.message.includes('audio format')) {
+      errorMessage = "Unsupported audio format. Please try a different recording format.";
+    } else if (error.message.includes('size')) {
+      errorMessage = "Audio file too large. Please try a shorter recording.";
+    }
+    
+    res.status(500).json({ 
+      error: errorMessage,
+      details: error.message 
+    });
   }
 });
 
