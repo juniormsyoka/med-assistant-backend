@@ -13,8 +13,16 @@ app.use(bodyParser.json());
 app.use(cors());
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-const genAI = new GoogleGenerativeAI({ apiKey: process.env.GEMINI_API_KEY });
+//const genAI = new GoogleGenerativeAI({ apiKey: process.env.GEMINI_API_KEY });
 
+
+const genAI = new GoogleGenerativeAI({
+  clientOptions: {
+    credentials: JSON.parse(
+      fs.readFileSync('./gemini-service-account.json', 'utf-8')
+    )
+  }
+});
 // Test endpoint
 app.get("/api/test", (req, res) => {
   res.json({ message: "Server is working!", timestamp: new Date() });
