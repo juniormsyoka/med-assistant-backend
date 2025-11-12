@@ -82,10 +82,10 @@ app.post("/api/insights", async (req, res) => {
   }
 });
 
-/*const upload = multer({ storage: multer.memoryStorage() });
+const upload = multer({ storage: multer.memoryStorage() });
 
 // Updated scan endpoint using Gemini
-app.post("/api/scan", upload.single("file"), async (req, res) => {
+/*app.post("/api/scan", upload.single("file"), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: "No file uploaded" });
