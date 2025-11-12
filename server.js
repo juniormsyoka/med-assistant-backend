@@ -131,20 +131,36 @@ app.post("/api/scan", upload.single("file"), async (req, res) => {
   }
 });
 
-// server.js - Updated transcribe endpoint using Gemini
+  // server.js - UPDATED transcribe endpoint
 app.post("/api/transcribe", upload.single("file"), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: "No audio file uploaded" });
     }
 
-    console.log("🎤 Processing audio with Gemini...");
-
-    const model = genAI.getGenerativeModel({ 
-      model: "gemini-1.5-flash", // or "gemini-1.5-pro" for better accuracy
+    console.log("🎤 Processing audio with Gemini...", {
+      size: req.file.size,
+      mimetype: req.file.mimetype,
+      originalname: req.file.originalname
     });
 
-    // Convert audio to base64
+    // Validate file size (max 10MB)
+    if (req.file.size > 10 * 1024 * 1024) {
+      return res.status(400).json({ error: "Audio file too large (max 10MB)" });
+    }
+
+    // Validate MIME type
+    const allowedTypes = ['audio/m4a', 'audio/mp4', 'audio/mpeg', 'audio/wav', 'audio/webm'];
+    if (!allowedTypes.includes(req.file.mimetype)) {
+      return res.status(400).json({ 
+        error: `Unsupported audio format: ${req.file.mimetype}. Supported: ${allowedTypes.join(', ')}` 
+      });
+    }
+
+    const model = genAI.getGenerativeModel({ 
+      model: "gemini-1.5-flash",
+    });
+
     const audioBase64 = req.file.buffer.toString('base64');
     
     const prompt = `
@@ -154,23 +170,28 @@ app.post("/api/transcribe", upload.single("file"), async (req, res) => {
       If the audio contains medical terms, transcribe them accurately.
       If there's background noise or unclear speech, do your best to transcribe what you can hear.
       
-      Transcription:
+      Important: Return ONLY the transcription text, nothing else.
     `;
 
     // Create the audio part for Gemini
     const audioPart = {
       inlineData: {
-        mimeType: req.file.mimetype, // e.g., 'audio/m4a', 'audio/mp4', etc.
+        mimeType: req.file.mimetype,
         data: audioBase64
       }
     };
 
+    console.log("📝 Sending to Gemini for transcription...");
+
     // Generate content with both audio and text prompt
     const result = await model.generateContent([prompt, audioPart]);
     const response = await result.response;
-    const transcription = response.text();
+    const transcription = response.text().trim();
 
-    console.log("✅ Gemini transcription result:", transcription);
+    console.log("✅ Gemini transcription successful:", {
+      length: transcription.length,
+      preview: transcription.substring(0, 100) + '...'
+    });
 
     res.json({ 
       transcript: transcription,
@@ -183,10 +204,14 @@ app.post("/api/transcribe", upload.single("file"), async (req, res) => {
     
     // More detailed error information
     let errorMessage = "Failed to transcribe audio";
-    if (error.message.includes('audio format')) {
+    if (error.message.includes('audio format') || error.message.includes('mimeType')) {
       errorMessage = "Unsupported audio format. Please try a different recording format.";
-    } else if (error.message.includes('size')) {
+    } else if (error.message.includes('size') || error.message.includes('large')) {
       errorMessage = "Audio file too large. Please try a shorter recording.";
+    } else if (error.message.includes('quota') || error.message.includes('limit')) {
+      errorMessage = "API quota exceeded. Please try again later.";
+    } else if (error.message.includes('invalid') || error.message.includes('API key')) {
+      errorMessage = "Invalid API configuration. Please check your Gemini API key.";
     }
     
     res.status(500).json({ 
@@ -195,6 +220,7 @@ app.post("/api/transcribe", upload.single("file"), async (req, res) => {
     });
   }
 });
+
 
 // New endpoint for better audio processing (if you want to use Google Speech-to-Text)
 app.post("/api/transcribe-advanced", upload.single("file"), async (req, res) => {
