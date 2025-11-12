@@ -155,7 +155,7 @@ app.post("/api/scan", upload.single("file"), async (req, res) => {
 
     console.log("🔑 Gemini API key exists, length:", process.env.GEMINI_API_KEY.length);
 
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
     console.log("🤖 Gemini model initialized");
 
     const imageBase64 = req.file.buffer.toString('base64');
