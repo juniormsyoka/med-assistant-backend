@@ -82,7 +82,7 @@ app.post("/api/insights", async (req, res) => {
   }
 });
 
-const upload = multer({ storage: multer.memoryStorage() });
+/*const upload = multer({ storage: multer.memoryStorage() });
 
 // Updated scan endpoint using Gemini
 app.post("/api/scan", upload.single("file"), async (req, res) => {
@@ -128,6 +128,78 @@ app.post("/api/scan", upload.single("file"), async (req, res) => {
   } catch (error) {
     console.error("❌ Gemini scan error:", error);
     res.status(500).json({ error: "Failed to process medical image with Gemini" });
+  }
+});
+*/
+app.post("/api/scan", upload.single("file"), async (req, res) => {
+  console.log("🎯 /api/scan endpoint hit");
+  
+  try {
+    if (!req.file) {
+      console.log("❌ No file uploaded");
+      return res.status(400).json({ error: "No file uploaded" });
+    }
+
+    console.log("📸 File received:", {
+      size: req.file.size,
+      mimetype: req.file.mimetype,
+      originalname: req.file.originalname,
+      bufferLength: req.file.buffer.length
+    });
+
+    // Check if Gemini API key exists
+    if (!process.env.GEMINI_API_KEY) {
+      console.log("❌ GEMINI_API_KEY not found in environment");
+      return res.status(500).json({ error: "Gemini API key not configured" });
+    }
+
+    console.log("🔑 Gemini API key exists, length:", process.env.GEMINI_API_KEY.length);
+
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    console.log("🤖 Gemini model initialized");
+
+    const imageBase64 = req.file.buffer.toString('base64');
+    console.log("📊 Image converted to base64, length:", imageBase64.length);
+
+    const prompt = `
+      Analyze this medical image and extract any prescription or medication information.
+      Provide a clear summary of what you find.
+    `;
+
+    console.log("🚀 Sending to Gemini...");
+
+    const imagePart = {
+      inlineData: {
+        mimeType: req.file.mimetype,
+        data: imageBase64
+      }
+    };
+
+    const result = await model.generateContent([prompt, imagePart]);
+    console.log("✅ Gemini response received");
+
+    const response = await result.response;
+    const analysis = response.text();
+
+    console.log("📝 Gemini analysis length:", analysis.length);
+    console.log("📝 Gemini analysis preview:", analysis.substring(0, 100) + '...');
+
+    res.json({ 
+      text: analysis,
+      success: true,
+      analyzed: true
+    });
+
+  } catch (error) {
+    console.error("❌ /api/scan error:", error);
+    console.error("❌ Error details:", error.message);
+    console.error("❌ Error stack:", error.stack);
+    
+    res.status(500).json({ 
+      error: "Failed to process image with Gemini",
+      details: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
   }
 });
 
