@@ -5,6 +5,8 @@ import Groq from "groq-sdk";
 import dotenv from "dotenv";
 import cors from "cors";
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import fs from 'fs';
+
 
 dotenv.config();
 
