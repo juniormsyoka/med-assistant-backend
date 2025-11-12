@@ -93,7 +93,7 @@ app.post("/api/scan", upload.single("file"), async (req, res) => {
 
     console.log("📷 Received image for scanning with Gemini...");
 
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
     const prompt = `
       You are a medical assistant. Analyze this prescription or medication image and provide:
