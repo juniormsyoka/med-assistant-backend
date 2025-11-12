@@ -143,19 +143,25 @@ app.post("/api/transcribe", upload.single("file"), async (req, res) => {
       mimetype: req.file.mimetype
     });
 
-    // Since Gemini API key is invalid, use Groq with a descriptive prompt
-    const prompt = `
-      A user recorded a voice message but we can't transcribe it directly. 
-      Since this is a medical app, please provide a helpful response about voice features.
-      
-      Create a friendly message that:
-      1. Acknowledges their voice message was received
-      2. Explains that transcription features are being upgraded
-      3. Encourages them to type their message for now
-      4. Keeps it under 2 sentences
-      
-      Make it warm and medical-friendly.
-    `;
+    // In your server.js - Update the Groq fallback prompt:
+const prompt = `
+  A user recorded a voice message but we can't transcribe it directly. 
+  Since this is a medical app, please provide a helpful response about voice features.
+  
+  Create a friendly message that:
+  1. Acknowledges their voice message was received
+  2. Explains that transcription features are being upgraded
+  3. Encourages them to type their message for now
+  4. Keeps it under 2 sentences
+  
+  Make it warm and medical-friendly.
+  IMPORTANT: Do not use quotes around your response.
+`;
+
+// After getting the response, clean it up:
+let message = completion.choices[0]?.message?.content || "Voice message received! We're upgrading our voice features.";
+// Remove surrounding quotes if present
+message = message.replace(/^"(.*)"$/, '$1').trim();
 
     const completion = await groq.chat.completions.create({
       model: "llama-3.1-8b-instant",
@@ -163,7 +169,7 @@ app.post("/api/transcribe", upload.single("file"), async (req, res) => {
       max_tokens: 100,
     });
 
-    const message = completion.choices[0]?.message?.content || "Voice message received! We're upgrading our voice features.";
+  //  const message = completion.choices[0]?.message?.content || "Voice message received! We're upgrading our voice features.";
 
     console.log("✅ Groq fallback response:", message);
 
