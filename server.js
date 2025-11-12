@@ -13,7 +13,7 @@ app.use(bodyParser.json());
 app.use(cors());
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-const genAI = new GoogleGenerativeAI({ apiKey: process.env.GEMINI_API_KEY });
+const genAI = AIzaSyB9D4rGOvuZMGERjwR72uhxZNjGxUkRmh8;//new GoogleGenerativeAI({ apiKey: process.env.GEMINI_API_KEY });
 
 // Test endpoint
 app.get("/api/test", (req, res) => {
