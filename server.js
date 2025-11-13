@@ -92,31 +92,20 @@ app.post("/api/insights", async (req, res) => {
 /* ===============================
    📷 Image Scan (Gemini)
 =================================*/
-
 app.post("/api/scan", upload.single("file"), async (req, res) => {
-  console.log("📸 /api/scan called for image analysis");
+  console.log("📸 /api/scan called");
 
   try {
-    if (!req.file) {
-      return res.status(400).json({ error: "No file uploaded" });
-    }
-
-    if (!process.env.GEMINI_API_KEY) {
+    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+    if (!process.env.GEMINI_API_KEY)
       return res.status(500).json({ error: "Gemini API key missing" });
-    }
 
     const mimeType = req.file.mimetype || "image/jpeg";
-    console.log("📦 Received file:", {
-      size: req.file.size,
-      mimeType,
-    });
+    console.log("📦 Received file:", { size: req.file.size, mimeType });
 
-    // ✅ Convert safely to base64 string
     const base64Data = req.file.buffer.toString("base64");
 
-    // ✅ Initialize Gemini
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-   // const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });//({ model: "gemini-1.5-flash" });
     const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
     const prompt = `
@@ -132,23 +121,19 @@ app.post("/api/scan", upload.single("file"), async (req, res) => {
     `;
 
     const imagePart = {
-      inlineData: {
-        mimeType,
-        data: base64Data,
-      },
+      inlineData: { mimeType, data: base64Data },
     };
 
     console.log("🚀 Sending to Gemini...");
     const result = await model.generateContent([prompt, imagePart]);
-
     const text = result.response.text();
-    console.log("✅ Gemini image analysis complete:", text.slice(0, 80) + "...");
 
+    console.log("✅ Gemini image analysis complete:", text.slice(0, 80) + "...");
     res.json({ text, analysis: text, rawText: text, success: true });
   } catch (error) {
     console.error("❌ Gemini analysis error:", error?.message || error);
 
-    // Extended debug info
+    // Extended debug info if available
     if (error.response && typeof error.response.text === "function") {
       const errText = await error.response.text();
       console.error("📩 Gemini raw API response:", errText);
@@ -161,7 +146,6 @@ app.post("/api/scan", upload.single("file"), async (req, res) => {
     });
   }
 });
-
 
 /* ===============================
    🎤 Voice Transcription (Groq Fallback)
