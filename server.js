@@ -5,8 +5,6 @@ import Groq from "groq-sdk";
 import dotenv from "dotenv";
 import cors from "cors";
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import fs from 'fs';
-
 
 dotenv.config();
 
@@ -14,23 +12,22 @@ const app = express();
 app.use(bodyParser.json());
 app.use(cors());
 
+/* ===============================
+   🔧 Initialize AI Clients
+=================================*/
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-//const genAI = new GoogleGenerativeAI({ apiKey: process.env.GEMINI_API_KEY });
+const upload = multer({ storage: multer.memoryStorage() });
 
-
-const genAI = new GoogleGenerativeAI({
-  clientOptions: {
-    credentials: JSON.parse(
-      fs.readFileSync('./gemini-service-account.json', 'utf-8')
-    )
-  }
-});
-// Test endpoint
+/* ===============================
+   ✅ Health Check Endpoint
+=================================*/
 app.get("/api/test", (req, res) => {
   res.json({ message: "Server is working!", timestamp: new Date() });
 });
 
-// Real AI chat endpoint with streaming (still using Groq)
+/* ===============================
+   💬 AI Chat (Groq)
+=================================*/
 app.post("/api/chat", async (req, res) => {
   const { message } = req.body;
   if (!message) return res.status(400).json({ error: "Message is required" });
@@ -39,10 +36,10 @@ app.post("/api/chat", async (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("X-Accel-Buffering", "no");
 
-  console.log("Received message:", message);
+  console.log("🗨️ Received message:", message);
 
   try {
-    const prompt = `You are a helpful medication assistant. Respond to this: "${message}"`;
+    const prompt = `You are a helpful medical assistant. Respond concisely and clearly to this user question: "${message}"`;
 
     const stream = await groq.chat.completions.create({
       model: "llama-3.1-8b-instant",
@@ -52,31 +49,30 @@ app.post("/api/chat", async (req, res) => {
 
     for await (const chunk of stream) {
       const text = chunk.choices[0]?.delta?.content || "";
-      if (text) {
-        res.write(text);
-      }
+      if (text) res.write(text);
     }
-
     res.end();
   } catch (err) {
-    console.error("Groq error:", err);
+    console.error("❌ Groq error:", err);
     res.status(500).end("Error with Groq AI service");
   }
 });
 
-// Insights endpoint (still using Groq)
+/* ===============================
+   📊 Insights (Groq Summary)
+=================================*/
 app.post("/api/insights", async (req, res) => {
   try {
     const { stats, logs } = req.body;
 
     const summaryPrompt = `
-    You are a medication adherence coach.
-    Based on these stats: ${JSON.stringify(stats)}
-    and logs: ${logs.map(log => `${log.medicationName} - ${log.status}`).join(", ")}
-
-    Write a short, encouraging summary for the patient.
-    Focus on patterns (time of day, missed vs late, improvements).
-    Keep it under 3 sentences.
+      You are a medication adherence coach.
+      Based on these stats: ${JSON.stringify(stats)}
+      and logs: ${logs
+        .map((log) => `${log.medicationName} - ${log.status}`)
+        .join(", ")}
+      Write a short, encouraging summary (≤3 sentences).
+      Focus on patterns, improvements, and suggestions.
     `;
 
     const completion = await groq.chat.completions.create({
@@ -84,7 +80,8 @@ app.post("/api/insights", async (req, res) => {
       messages: [{ role: "user", content: summaryPrompt }],
     });
 
-    const message = completion.choices[0]?.message?.content || "No insights available.";
+    const message =
+      completion.choices[0]?.message?.content || "No insights available.";
     res.json({ insight: message });
   } catch (error) {
     console.error("Insights error:", error);
@@ -92,158 +89,80 @@ app.post("/api/insights", async (req, res) => {
   }
 });
 
-const upload = multer({ storage: multer.memoryStorage() });
-
-// Updated scan endpoint using Gemini
-/*app.post("/api/scan", upload.single("file"), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: "No file uploaded" });
-    }
-
-    console.log("📷 Received image for scanning with Gemini...");
-
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-
-    const prompt = `
-      You are a medical assistant. Analyze this prescription or medication image and provide:
-
-      Please extract:
-      1. Medication/drug names
-      2. Dosage information
-      3. Frequency and instructions
-      4. Any important medical notes or warnings
-
-      If the image is unclear, not a prescription, or not medically related, please say so clearly.
-      Format your response in a clear, patient-friendly way without using markdown.
-      Be accurate and cautious - if you're unsure about anything, indicate the uncertainty.
-    `;
-
-    const image = {
-      inlineData: {
-        data: req.file.buffer.toString('base64'),
-        mimeType: req.file.mimetype
-      }
-    };
-
-    const result = await model.generateContent([prompt, image]);
-    const response = await result.response;
-    const analysis = response.text();
-
-    res.json({ 
-      text: analysis, 
-      structured: { extracted_text: analysis },
-      rawText: analysis 
-    });
-  } catch (error) {
-    console.error("❌ Gemini scan error:", error);
-    res.status(500).json({ error: "Failed to process medical image with Gemini" });
-  }
-});
-*/
+/* ===============================
+   📷 Image Scan (Gemini)
+=================================*/
 app.post("/api/scan", upload.single("file"), async (req, res) => {
-  console.log("🎯 /api/scan endpoint hit");
-  
+  console.log("📸 /api/scan called for image analysis");
+
   try {
     if (!req.file) {
-      console.log("❌ No file uploaded");
       return res.status(400).json({ error: "No file uploaded" });
     }
-
-    console.log("📸 File received:", {
-      size: req.file.size,
-      mimetype: req.file.mimetype,
-      originalname: req.file.originalname,
-      bufferLength: req.file.buffer.length
-    });
-
-    // Check if Gemini API key exists
     if (!process.env.GEMINI_API_KEY) {
-      console.log("❌ GEMINI_API_KEY not found in environment");
-      return res.status(500).json({ error: "Gemini API key not configured" });
+      return res.status(500).json({ error: "Gemini API key missing" });
     }
 
-    console.log("🔑 Gemini API key exists, length:", process.env.GEMINI_API_KEY.length);
-
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-    console.log("🤖 Gemini model initialized");
-
-    const imageBase64 = req.file.buffer.toString('base64');
-    console.log("📊 Image converted to base64, length:", imageBase64.length);
+    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
     const prompt = `
-      Analyze this medical image and extract any prescription or medication information.
-      Provide a clear summary of what you find.
+      You are a medical assistant analyzing a prescription or medication image.
+      Extract all readable text and identify:
+      - Drug names and dosages
+      - Frequency or duration
+      - Instructions or warnings
+      - If unclear or unrelated, say so clearly.
+      Format:
+      EXTRACTED TEXT: ...
+      ANALYSIS: ...
     `;
-
-    console.log("🚀 Sending to Gemini...");
 
     const imagePart = {
       inlineData: {
         mimeType: req.file.mimetype,
-        data: imageBase64
-      }
+        data: req.file.buffer.toString("base64"),
+      },
     };
 
+    console.log("🚀 Sending image to Gemini...");
     const result = await model.generateContent([prompt, imagePart]);
-    console.log("✅ Gemini response received");
+    const analysis = result.response.text();
 
-    const response = await result.response;
-    const analysis = response.text();
-
-    console.log("📝 Gemini analysis length:", analysis.length);
-    console.log("📝 Gemini analysis preview:", analysis.substring(0, 100) + '...');
-
-    res.json({ 
+    console.log("✅ Gemini image analysis complete");
+    res.json({
       text: analysis,
+      analysis,
+      rawText: analysis,
       success: true,
-      analyzed: true
     });
-
   } catch (error) {
-    console.error("❌ /api/scan error:", error);
-    console.error("❌ Error details:", error.message);
-    console.error("❌ Error stack:", error.stack);
-    
-    res.status(500).json({ 
-      error: "Failed to process image with Gemini",
+    console.error("❌ Gemini analysis error:", error);
+    res.status(500).json({
+      error: "Gemini analysis failed",
       details: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 });
 
-  // TEMPORARY FIX - Use Groq instead of Gemini for transcription
+/* ===============================
+   🎤 Voice Transcription (Groq Fallback)
+=================================*/
 app.post("/api/transcribe", upload.single("file"), async (req, res) => {
   try {
-    if (!req.file) {
+    if (!req.file)
       return res.status(400).json({ error: "No audio file uploaded" });
-    }
 
-    console.log("🎤 Audio file received (using Groq fallback):", {
-      size: req.file.size,
-      mimetype: req.file.mimetype
-    });
+    console.log("🎤 Audio file received for transcription fallback");
 
-    // In your server.js - Update the Groq fallback prompt:
-const prompt = `
-  A user recorded a voice message but we can't transcribe it directly. 
-  Since this is a medical app, please provide a helpful response about voice features.
-  
-  Create a friendly message that:
-  1. Acknowledges their voice message was received
-  2. Explains that transcription features are being upgraded
-  3. Encourages them to type their message for now
-  4. Keeps it under 2 sentences
-  
-  Make it warm and medical-friendly.
-  IMPORTANT: Do not use quotes around your response.
-`;
-
-// After getting the response, clean it up:
-let message = completion.choices[0]?.message?.content || "Voice message received! We're upgrading our voice features.";
-// Remove surrounding quotes if present
-message = message.replace(/^"(.*)"$/, '$1').trim();
+    const prompt = `
+      A user recorded a voice message but transcription isn't available.
+      Write a warm, medical-friendly message that:
+      1. Acknowledges their voice message was received.
+      2. Explains that transcription features are being upgraded.
+      3. Encourages them to type their message for now.
+      Keep it under 2 sentences.
+    `;
 
     const completion = await groq.chat.completions.create({
       model: "llama-3.1-8b-instant",
@@ -251,54 +170,34 @@ message = message.replace(/^"(.*)"$/, '$1').trim();
       max_tokens: 100,
     });
 
-  //  const message = completion.choices[0]?.message?.content || "Voice message received! We're upgrading our voice features.";
+    let message =
+      completion.choices[0]?.message?.content ||
+      "Voice message received! We're upgrading our voice features.";
+    message = message.replace(/^"(.*)"$/, "$1").trim();
 
-    console.log("✅ Groq fallback response:", message);
-
-    res.json({ 
+    res.json({
       transcript: message,
       success: true,
-      note: "Using Groq fallback - Gemini API key issue"
+      note: "Groq fallback (no Gemini transcription yet)",
     });
-    
   } catch (error) {
     console.error("❌ Transcription error:", error);
-    
-    // Final fallback
-    res.json({ 
-      transcript: "🎤 Voice message received! Our AI assistant is currently being upgraded with better voice recognition features. Please type your message for now.",
+    res.json({
+      transcript:
+        "🎤 Voice message received! We're upgrading our voice recognition. Please type your message for now.",
       success: true,
-      note: "Static fallback response"
+      note: "Static fallback response",
     });
   }
 });
 
-
-// New endpoint for better audio processing (if you want to use Google Speech-to-Text)
-app.post("/api/transcribe-advanced", upload.single("file"), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: "No audio file uploaded" });
-    }
-
-    // Here you would integrate with Google Cloud Speech-to-Text
-    // Then use Gemini to analyze the medical content
-    // This requires Google Cloud Speech-to-Text API credentials
-
-    res.json({ 
-      message: "Advanced audio processing endpoint - set up Google Speech-to-Text for full functionality",
-      setup_required: true 
-    });
-  } catch (error) {
-    console.error("Advanced transcribe error:", error);
-    res.status(500).json({ error: "Advanced audio processing failed" });
-  }
-});
-
+/* ===============================
+   ⚙️ Server Startup
+=================================*/
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`AI assistant backend running on port ${PORT}`);
+  console.log(`🚀 AI Assistant backend running on port ${PORT}`);
+  console.log(`💬 Chat: Groq`);
   console.log(`📷 Image analysis: Gemini`);
-  console.log(`🎤 Audio processing: Gemini`);
-  console.log(`💬 Text chat: Groq`);
+  console.log(`🎤 Voice fallback: Groq`);
 });
