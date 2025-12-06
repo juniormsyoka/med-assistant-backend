@@ -1,25 +1,83 @@
+# ============================================
+# 🔒 SECURITY - NEVER COMMIT THESE!
+# ============================================
+
+# API Keys and Credentials
+keys/                    # Entire keys directory
+*.key                    # Private key files
+*.pem                    # Certificate files
+*.env                    # Environment files
+.env.local               # Local environment
+.env.development         # Development environment
+.env.production          # Production environment
+secrets/                 # Any secrets directories
+*.secret                 # Secret files
+service-account*.json    # Google Cloud service accounts
+*-credentials.json       # Credential files
+firebase*.json           # Firebase configs
+
+# ============================================
+# 📦 DEPENDENCIES & BUILD
+# ============================================
+
 # Node modules
 node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
-# Environment variables
-.env
+# Build outputs
+dist/
+build/
+out/
+*.exe
+*.dll
 
-# Keys and credentials
-keys/
-keys/gemini-service-account.json
-
-# API folders you don’t want tracked
-/diagnosis-api
-
-# JSON files (if you want to ignore all except code/config)
-/*.json
+# ============================================
+# 🔧 DEVELOPMENT
+# ============================================
 
 # Logs
+logs/
 *.log
 
-# OS / IDE
+# Runtime
+*.pid
+*.seed
+
+# Coverage
+coverage/
+.nyc_output
+
+# ============================================
+# 💻 OS & EDITOR
+# ============================================
+
+# OS
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
 
-keys/
+# ============================================
+# 🎯 YOUR PROJECT SPECIFIC
+# ============================================
+
+# API folders (adjust as needed)
+/diagnosis-api
+
+# Temporary files
+*.tmp
+*.temp
+tmp/
+temp/
