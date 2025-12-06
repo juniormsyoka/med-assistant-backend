@@ -5,6 +5,8 @@ import Groq from "groq-sdk";
 import dotenv from "dotenv";
 import cors from "cors";
 
+import { pipeline } from '@xenova/transformers';
+
 dotenv.config();
 console.log("DEBUG: Loaded GEMINI KEY?", process.env.GEMINI_API_KEY);
 
@@ -17,6 +19,20 @@ app.use(cors());
 =================================*/
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const upload = multer({ storage: multer.memoryStorage() });
+
+
+let sentimentAnalyzer = null;
+(async () => {
+  try {
+    console.log("🧠 Loading DistilBERT sentiment model...");
+    sentimentAnalyzer = await pipeline('sentiment-analysis', 
+      'Xenova/distilbert-base-uncased-finetuned-sst-2-english');
+    console.log("✅ DistilBERT loaded successfully!");
+  } catch (error) {
+    console.error("❌ Failed to load DistilBERT:", error.message);
+    sentimentAnalyzer = null;
+  }
+})();
 
 // Request logging middleware
 app.use((req, res, next) => {
@@ -36,6 +52,291 @@ app.use((req, res, next) => {
 app.get("/api/test", (req, res) => {
   res.json({ message: "Server is working!", timestamp: new Date() });
 });
+
+
+/* ===============================
+   🧠 MOOD ANALYSIS ENDPOINT (DistilBERT)
+=================================*/
+app.post("/api/mood", async (req, res) => {
+  try {
+    const { text, analyzeFor = 'user' } = req.body;
+    
+    if (!text || typeof text !== 'string') {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Text is required and must be a string' 
+      });
+    }
+
+    console.log(`🧠 Mood analysis requested for ${analyzeFor}:`, text.substring(0, 100) + '...');
+
+    // If DistilBERT isn't loaded yet, use simple analysis
+    if (!sentimentAnalyzer) {
+      console.log("⚠️ DistilBERT not loaded, using simple analysis");
+      const simpleResult = analyzeSentimentSimple(text, analyzeFor);
+      return res.json({
+        success: true,
+        ...simpleResult,
+        modelUsed: 'simple',
+        analyzedAt: new Date().toISOString()
+      });
+    }
+
+    // Use DistilBERT for analysis
+    console.log("🧠 Analyzing with DistilBERT...");
+    
+    // DistilBERT returns array of results
+    const distilbertResult = await sentimentAnalyzer(text);
+    
+    // Extract the main result
+    const mainResult = distilbertResult[0];
+    const label = mainResult.label; // 'POSITIVE' or 'NEGATIVE'
+    const score = mainResult.score; // Confidence score 0-1
+    
+    console.log(`📊 DistilBERT result: ${label} (${score.toFixed(4)})`);
+    
+    // Enhanced healthcare-specific analysis
+    const enhancedAnalysis = enhanceWithHealthcareContext(text, label, score, analyzeFor);
+    
+    res.json({
+      success: true,
+      ...enhancedAnalysis,
+      modelUsed: 'distilbert',
+      analyzedAt: new Date().toISOString(),
+      textPreview: text.substring(0, 50) + (text.length > 50 ? '...' : ''),
+      textLength: text.length
+    });
+    
+  } catch (error) {
+    console.error("❌ Mood analysis error:", error);
+    
+    // Fallback to simple analysis
+    const simpleResult = analyzeSentimentSimple(req.body?.text || '', req.body?.analyzeFor || 'user');
+    
+    res.json({
+      success: true,
+      ...simpleResult,
+      modelUsed: 'simple-fallback',
+      note: 'DistilBERT failed, using simple analysis',
+      analyzedAt: new Date().toISOString()
+    });
+  }
+});
+
+/* ===============================
+   🏥 Healthcare Context Enhancement
+=================================*/
+function enhanceWithHealthcareContext(text, distilbertLabel, distilbertScore, analyzeFor) {
+  const textLower = text.toLowerCase();
+  
+  // Convert DistilBERT output to our format
+  const isPositive = distilbertLabel === 'POSITIVE';
+  
+  // Normalize score: -1 (very negative) to 1 (very positive)
+  const moodScore = isPositive ? distilbertScore : -distilbertScore;
+  
+  // Calculate stress score (healthcare-specific)
+  const stressScore = calculateHealthcareStressScore(text, moodScore);
+  
+  // Detect crisis keywords (healthcare-specific)
+  const crisisKeywords = [
+    'suicide', 'kill myself', 'end my life', 'want to die', 
+    'self harm', 'self-harm', 'cutting', 'overdose',
+    'panic attack', 'cant breathe', 'chest pain', 'emergency',
+    'help me', 'i give up', 'nothing matters'
+  ];
+  
+  const hasCrisisKeyword = crisisKeywords.some(keyword => textLower.includes(keyword));
+  
+  // Detect urgency
+  const urgencyKeywords = ['urgent', 'emergency', '911', 'immediately', 'now', 'asap'];
+  const hasUrgency = urgencyKeywords.some(keyword => textLower.includes(keyword));
+  
+  // Detect pain mentions
+  const painKeywords = ['pain', 'hurt', 'aching', 'sore', 'unbearable', 'excruciating'];
+  const mentionsPain = painKeywords.some(keyword => textLower.includes(keyword));
+  
+  // Detect medication mentions
+  const medKeywords = ['medication', 'pill', 'drug', 'prescription', 'dose', 'tablet'];
+  const mentionsMedication = medKeywords.some(keyword => textLower.includes(keyword));
+  
+  // Determine emotion category
+  const emotion = categorizeEmotion(moodScore, stressScore, analyzeFor);
+  
+  // Determine if this is a crisis
+  const isCrisis = analyzeFor === 'user' && (
+    hasCrisisKeyword || 
+    (stressScore > 0.85 && moodScore < -0.7) ||
+    (hasUrgency && mentionsPain && moodScore < -0.5)
+  );
+  
+  return {
+    moodScore: parseFloat(moodScore.toFixed(3)),
+    stressScore: parseFloat(stressScore.toFixed(3)),
+    emotion,
+    isCrisis,
+    confidence: distilbertScore,
+    healthcareContext: {
+      hasCrisisKeyword,
+      hasUrgency,
+      mentionsPain,
+      mentionsMedication,
+      wordCount: text.split(' ').length,
+      hasQuestion: text.includes('?'),
+      hasExclamation: text.includes('!'),
+      allCapsRatio: (text.match(/[A-Z]/g)?.length || 0) / text.length || 0
+    },
+    suggestedResponseTone: getSuggestedTone(moodScore, stressScore, isCrisis, analyzeFor)
+  };
+}
+
+/* ===============================
+   📊 Helper Functions
+=================================*/
+function calculateHealthcareStressScore(text, moodScore) {
+  const textLower = text.toLowerCase();
+  
+  let stressScore = 0.5; // Base
+  
+  // Negative mood adds stress
+  if (moodScore < 0) {
+    stressScore += Math.abs(moodScore) * 0.5;
+  }
+  
+  // Urgency indicators
+  if (textLower.includes('urgent') || textLower.includes('emergency')) stressScore += 0.3;
+  if (textLower.includes('911')) stressScore += 0.4;
+  
+  // Pain indicators
+  if (textLower.includes('pain') || textLower.includes('hurt')) stressScore += 0.2;
+  
+  // Length (long messages might indicate distress)
+  if (text.length > 200) stressScore += 0.1;
+  
+  // Punctuation intensity
+  const exclamationCount = (text.match(/!/g) || []).length;
+  stressScore += Math.min(0.3, exclamationCount * 0.05);
+  
+  // ALL CAPS intensity
+  const capsCount = (text.match(/[A-Z]/g) || []).length;
+  const capsRatio = capsCount / text.length;
+  if (capsRatio > 0.3) stressScore += 0.2;
+  
+  return Math.min(1, Math.max(0, stressScore));
+}
+
+function categorizeEmotion(moodScore, stressScore, analyzeFor) {
+  // For AI responses
+  if (analyzeFor === 'ai') {
+    if (moodScore > 0.7) return 'empathetic';
+    if (moodScore > 0.3) return 'supportive';
+    if (moodScore > -0.3) return 'neutral';
+    if (moodScore > -0.7) return 'concerned';
+    return 'urgent';
+  }
+  
+  // For user messages
+  if (stressScore > 0.8 && moodScore < -0.7) return 'crisis';
+  if (stressScore > 0.6) return 'high-stress';
+  if (moodScore > 0.7) return 'positive';
+  if (moodScore > 0.3) return 'calm';
+  if (moodScore > -0.3) return 'neutral';
+  if (moodScore > -0.7) return 'worried';
+  return 'distressed';
+}
+
+function getSuggestedTone(moodScore, stressScore, isCrisis, analyzeFor) {
+  if (isCrisis) {
+    return {
+      tone: 'CRISIS_INTERVENTION',
+      priority: 'HIGHEST',
+      action: 'PROVIDE_EMERGENCY_RESOURCES',
+      empathyLevel: 'VERY_HIGH',
+      responseSpeed: 'IMMEDIATE'
+    };
+  }
+  
+  if (stressScore > 0.8) {
+    return {
+      tone: 'URGENT_CARING',
+      priority: 'HIGH',
+      action: 'CALM_AND_REASSURE',
+      empathyLevel: 'HIGH',
+      responseSpeed: 'FAST'
+    };
+  }
+  
+  if (moodScore < -0.5) {
+    return {
+      tone: 'EMPATHETIC_SUPPORTIVE',
+      priority: 'MEDIUM_HIGH',
+      action: 'VALIDATE_AND_COMFORT',
+      empathyLevel: 'HIGH',
+      responseSpeed: 'NORMAL'
+    };
+  }
+  
+  if (moodScore < 0) {
+    return {
+      tone: 'CARING_PROFESSIONAL',
+      priority: 'MEDIUM',
+      action: 'ACKNOWLEDGE_AND_HELP',
+      empathyLevel: 'MEDIUM_HIGH',
+      responseSpeed: 'NORMAL'
+    };
+  }
+  
+  return {
+    tone: 'NEUTRAL_HELPFUL',
+    priority: 'LOW',
+    action: 'PROVIDE_INFORMATION',
+    empathyLevel: 'MEDIUM',
+    responseSpeed: 'NORMAL'
+  };
+}
+
+// Simple fallback analysis (if DistilBERT fails)
+function analyzeSentimentSimple(text, analyzeFor) {
+  const textLower = text.toLowerCase();
+  
+  // Simple keyword matching
+  const positiveWords = ['good', 'great', 'better', 'improving', 'thanks', 'thank', 'happy', 'relieved', 'well', 'okay'];
+  const negativeWords = ['bad', 'terrible', 'worse', 'pain', 'hurt', 'anxious', 'worried', 'scared', 'depressed', 'sick'];
+  const crisisWords = ['suicide', 'kill myself', 'end my life', 'want to die', 'self harm', 'overdose'];
+  
+  const positiveCount = positiveWords.filter(word => textLower.includes(word)).length;
+  const negativeCount = negativeWords.filter(word => textLower.includes(word)).length;
+  const hasCrisisWord = crisisWords.some(word => textLower.includes(word));
+  
+  // Calculate scores
+  let moodScore = 0;
+  if (positiveCount > negativeCount) {
+    moodScore = 0.5 + (positiveCount * 0.1);
+  } else if (negativeCount > positiveCount) {
+    moodScore = -0.5 - (negativeCount * 0.1);
+  }
+  
+  // Clamp between -1 and 1
+  moodScore = Math.max(-1, Math.min(1, moodScore));
+  
+  // Stress score
+  const stressScore = Math.min(1, negativeCount * 0.2 + (text.length > 100 ? 0.3 : 0));
+  
+  return {
+    moodScore: parseFloat(moodScore.toFixed(3)),
+    stressScore: parseFloat(stressScore.toFixed(3)),
+    emotion: categorizeEmotion(moodScore, stressScore, analyzeFor),
+    isCrisis: hasCrisisWord || (analyzeFor === 'user' && stressScore > 0.8),
+    confidence: 0.7,
+    healthcareContext: {
+      hasCrisisKeyword: hasCrisisWord,
+      hasUrgency: textLower.includes('urgent') || textLower.includes('emergency'),
+      mentionsPain: textLower.includes('pain') || textLower.includes('hurt'),
+      mentionsMedication: textLower.includes('medication') || textLower.includes('pill'),
+      wordCount: text.split(' ').length
+    }
+  };
+}
 
 /* ===============================
    📋 List Available Gemini Models
@@ -472,4 +773,5 @@ app.listen(PORT, "0.0.0.0", () => {
   console.log(`📷 Image analysis: Gemini 2.5 Flash`);
   console.log(`🎤 Voice: Gemini + Groq fallback`);
   console.log(`🔧 Available at: http://localhost:${PORT}`);
+    console.log(`🔧 Mood API: POST /api/mood {text: "message", analyzeFor: "user"|"ai"}`);
 });
