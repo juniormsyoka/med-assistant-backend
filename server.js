@@ -370,8 +370,26 @@ function enhanceWithHealthcareContext(text, distilbertLabel, distilbertScore, an
   // Normalize score: -1 (very negative) to 1 (very positive)
   const moodScore = isPositive ? distilbertScore : -distilbertScore;
   
-  // Calculate stress score (healthcare-specific)
-  const stressScore = calculateHealthcareStressScore(text, moodScore);
+  // 🔧 IMPROVED: Calculate stress score with context awareness
+  let stressScore = calculateHealthcareStressScore(text, moodScore);
+  
+  // 🔧 FIX 1: Adjust stress score based on mood positivity
+  if (moodScore > 0.7) {
+    // Very positive messages get stress reduction
+    stressScore *= 0.6; // Reduce by 40%
+  } else if (moodScore > 0.3) {
+    // Positive messages get moderate stress reduction
+    stressScore *= 0.8; // Reduce by 20%
+  }
+  
+  // 🔧 NEW: Adjust for exclamations in positive context
+  if (moodScore > 0.5 && text.includes('!')) {
+    // Positive exclamations are less stressful
+    stressScore *= 0.9;
+  }
+  
+  // Ensure stressScore stays within bounds
+  stressScore = Math.min(1, Math.max(0, stressScore));
   
   // Detect crisis keywords (healthcare-specific)
   const crisisKeywords = [
@@ -395,14 +413,94 @@ function enhanceWithHealthcareContext(text, distilbertLabel, distilbertScore, an
   const medKeywords = ['medication', 'pill', 'drug', 'prescription', 'dose', 'tablet'];
   const mentionsMedication = medKeywords.some(keyword => textLower.includes(keyword));
   
-  // Determine emotion category
-  const emotion = categorizeEmotion(moodScore, stressScore, analyzeFor);
+  // 🔧 IMPROVED: Detect specific emotional keywords for better classification
+  const emotionKeywords = {
+    'anxious': ['anxious', 'worried', 'nervous', 'scared', 'afraid'],
+    'happy': ['happy', 'great', 'good', 'excellent', 'wonderful', 'amazing'],
+    'sad': ['sad', 'depressed', 'miserable', 'unhappy', 'hopeless'],
+    'angry': ['angry', 'mad', 'furious', 'upset', 'annoyed'],
+    'calm': ['calm', 'relaxed', 'peaceful', 'chill', 'serene'],
+    'stressed': ['stressed', 'overwhelmed', 'burned out', 'pressured'],
+    'frustrated': ['frustrated', 'annoyed', 'irritated', 'fed up']
+  };
   
-  // Determine if this is a crisis
-  const isCrisis = analyzeFor === 'user' && (
-    hasCrisisKeyword || 
-    (stressScore > 0.85 && moodScore < -0.7) ||
-    (hasUrgency && mentionsPain && moodScore < -0.5)
+  // 🔧 NEW: Keyword-based emotion detection (takes precedence over scores)
+  let keywordDetectedEmotion = null;
+  for (const [emotion, keywords] of Object.entries(emotionKeywords)) {
+    if (keywords.some(keyword => textLower.includes(keyword))) {
+      keywordDetectedEmotion = emotion;
+      break; // First match wins
+    }
+  }
+  
+  // 🔧 IMPROVED: Determine emotion category with keyword priority
+  let emotion;
+  if (keywordDetectedEmotion) {
+    // Use keyword-detected emotion if found
+    emotion = keywordDetectedEmotion;
+  } else {
+    // Fall back to score-based categorization
+    emotion = categorizeEmotionImproved(moodScore, stressScore, textLower, analyzeFor);
+  }
+  
+  // 🔧 IMPROVED: Determine if this is a crisis with better logic
+  let isCrisis = false;
+  
+  if (analyzeFor === 'user') {
+    // Level 1: Direct crisis keywords
+    if (hasCrisisKeyword) {
+      isCrisis = true;
+    }
+    // Level 2: High stress + negative mood combination
+    else if (stressScore > 0.8 && moodScore < -0.6) {
+      isCrisis = true;
+    }
+    // Level 3: Urgency + pain + negative mood
+    else if (hasUrgency && mentionsPain && moodScore < -0.4) {
+      isCrisis = true;
+    }
+    // Level 4: Extreme negative emotion keywords
+    else if (keywordDetectedEmotion === 'sad' && stressScore > 0.7 && moodScore < -0.5) {
+      isCrisis = true;
+    }
+  }
+  
+  // 🔧 NEW: Calculate confidence with healthcare context consideration
+  let confidence = distilbertScore;
+  
+  // Increase confidence if we have clear healthcare context
+  if (mentionsPain || mentionsMedication || hasUrgency) {
+    confidence = Math.min(1, confidence * 1.1);
+  }
+  
+  // Decrease confidence for very short messages
+  if (text.split(' ').length < 3) {
+    confidence *= 0.8;
+  }
+  
+  // 🔧 NEW: Enhanced healthcare context with intensity
+  const wordCount = text.split(' ').length;
+  const exclamationCount = (text.match(/!/g) || []).length;
+  const questionCount = (text.match(/\?/g) || []).length;
+  const capsCount = (text.match(/[A-Z]/g) || []).length;
+  const capsRatio = capsCount / text.length || 0;
+  
+  // Determine emotional intensity
+  const emotionalIntensity = Math.min(1, 
+    (exclamationCount * 0.2) + 
+    (capsRatio > 0.3 ? 0.3 : 0) + 
+    (wordCount > 50 ? 0.2 : 0)
+  );
+  
+  // 🔧 NEW: Enhanced suggested tone with more granularity
+  const suggestedTone = getEnhancedSuggestedTone(
+    moodScore, 
+    stressScore, 
+    isCrisis, 
+    analyzeFor,
+    emotionalIntensity,
+    mentionsPain,
+    mentionsMedication
   );
   
   return {
@@ -410,19 +508,238 @@ function enhanceWithHealthcareContext(text, distilbertLabel, distilbertScore, an
     stressScore: parseFloat(stressScore.toFixed(3)),
     emotion,
     isCrisis,
-    confidence: distilbertScore,
+    confidence: parseFloat(confidence.toFixed(3)),
     healthcareContext: {
       hasCrisisKeyword,
       hasUrgency,
       mentionsPain,
       mentionsMedication,
-      wordCount: text.split(' ').length,
-      hasQuestion: text.includes('?'),
-      hasExclamation: text.includes('!'),
-      allCapsRatio: (text.match(/[A-Z]/g)?.length || 0) / text.length || 0
+      wordCount,
+      hasQuestion: questionCount > 0,
+      hasExclamation: exclamationCount > 0,
+      allCapsRatio: capsRatio,
+      exclamationCount,
+      questionCount,
+      emotionalIntensity: parseFloat(emotionalIntensity.toFixed(3)),
+      keywordDetectedEmotion,
+      containsPositiveKeywords: moodScore > 0.7 && textLower.includes('good') || textLower.includes('great'),
+      containsNegativeKeywords: moodScore < -0.5 && (textLower.includes('bad') || textLower.includes('terrible'))
     },
-    suggestedResponseTone: getSuggestedTone(moodScore, stressScore, isCrisis, analyzeFor)
+    suggestedResponseTone: suggestedTone,
+    // 🔧 NEW: Add batch analysis metadata
+    modelUsed: 'distilbert',
+    analyzedAt: new Date().toISOString(),
+    analysisType: analyzeFor === 'ai' ? 'ai_response' : 'user_input'
   };
+}
+
+// 🔧 NEW IMPROVED EMOTION CATEGORIZATION FUNCTION
+function categorizeEmotionImproved(moodScore, stressScore, textLower, analyzeFor) {
+  // For AI responses
+  if (analyzeFor === 'ai') {
+    if (moodScore > 0.8) return 'empathetic';
+    if (moodScore > 0.5) return 'supportive';
+    if (moodScore > 0.2) return 'encouraging';
+    if (moodScore > -0.2) return 'neutral';
+    if (moodScore > -0.5) return 'concerned';
+    if (moodScore > -0.8) return 'urgent';
+    return 'crisis';
+  }
+  
+  // For user messages - IMPROVED GRANULAR LOGIC
+  
+  // First handle extreme cases
+  if (stressScore > 0.9 && moodScore < -0.8) return 'crisis';
+  if (stressScore > 0.85) return 'high-stress';
+  
+  // Handle positive-but-stressed cases (like excited anxiety)
+  if (stressScore > 0.6 && moodScore > 0.3) return 'excited';
+  if (stressScore > 0.6 && moodScore >= 0) return 'concerned';
+  if (stressScore > 0.6 && moodScore < 0) return 'stressed';
+  
+  // Pure mood-based classification
+  if (moodScore > 0.85) return 'very-positive';
+  if (moodScore > 0.7) return 'positive';
+  if (moodScore > 0.5) return 'slightly-positive';
+  if (moodScore > 0.3) return 'calm';
+  if (moodScore > -0.3) return 'neutral';
+  if (moodScore > -0.6) return 'slightly-negative';
+  if (moodScore > -0.8) return 'negative';
+  
+  return 'very-negative';
+}
+
+// 🔧 NEW ENHANCED SUGGESTED TONE FUNCTION
+function getEnhancedSuggestedTone(moodScore, stressScore, isCrisis, analyzeFor, emotionalIntensity, mentionsPain, mentionsMedication) {
+  if (isCrisis) {
+    return {
+      tone: 'CRISIS_INTERVENTION',
+      priority: 'HIGHEST',
+      action: 'PROVIDE_EMERGENCY_RESOURCES',
+      empathyLevel: 'VERY_HIGH',
+      responseSpeed: 'IMMEDIATE',
+      responseLength: 'SHORT_DIRECT',
+      focus: 'SAFETY_AND_SUPPORT'
+    };
+  }
+  
+  if (stressScore > 0.9) {
+    return {
+      tone: 'EXTREME_CALMING',
+      priority: 'VERY_HIGH',
+      action: 'CALM_DECREASE_STRESS',
+      empathyLevel: 'VERY_HIGH',
+      responseSpeed: 'FAST',
+      responseLength: 'CONCISE',
+      focus: 'STRESS_REDUCTION'
+    };
+  }
+  
+  if (stressScore > 0.8) {
+    return {
+      tone: 'CALM_REASSURING',
+      priority: 'HIGH',
+      action: 'REASSURE_AND_SUPPORT',
+      empathyLevel: 'HIGH',
+      responseSpeed: 'FAST',
+      responseLength: 'MODERATE',
+      focus: 'EMOTIONAL_SUPPORT'
+    };
+  }
+  
+  if (mentionsPain && moodScore < 0) {
+    return {
+      tone: 'CARING_PAIN_FOCUSED',
+      priority: 'HIGH',
+      action: 'ACKNOWLEDGE_PAIN_OFFER_SUPPORT',
+      empathyLevel: 'HIGH',
+      responseSpeed: 'FAST',
+      responseLength: 'MODERATE',
+      focus: 'PAIN_MANAGEMENT'
+    };
+  }
+  
+  if (mentionsMedication && stressScore > 0.5) {
+    return {
+      tone: 'PROFESSIONAL_CAREFUL',
+      priority: 'MEDIUM_HIGH',
+      action: 'PROVIDE_ACCURATE_INFO',
+      empathyLevel: 'MEDIUM_HIGH',
+      responseSpeed: 'NORMAL',
+      responseLength: 'DETAILED',
+      focus: 'MEDICATION_SAFETY'
+    };
+  }
+  
+  if (moodScore < -0.6) {
+    return {
+      tone: 'EMPATHETIC_VALIDATING',
+      priority: 'MEDIUM_HIGH',
+      action: 'VALIDATE_EMOTIONS',
+      empathyLevel: 'HIGH',
+      responseSpeed: 'NORMAL',
+      responseLength: 'MODERATE',
+      focus: 'EMOTIONAL_VALIDATION'
+    };
+  }
+  
+  if (moodScore < -0.3) {
+    return {
+      tone: 'SUPPORTIVE_HELPFUL',
+      priority: 'MEDIUM',
+      action: 'OFFER_SUPPORT_AND_HELP',
+      empathyLevel: 'MEDIUM_HIGH',
+      responseSpeed: 'NORMAL',
+      responseLength: 'MODERATE',
+      focus: 'PROBLEM_SOLVING'
+    };
+  }
+  
+  if (moodScore > 0.7) {
+    return {
+      tone: 'POSITIVE_ENGAGING',
+      priority: 'LOW',
+      action: 'ENGAGE_AND_CELEBRATE',
+      empathyLevel: 'MEDIUM',
+      responseSpeed: 'NORMAL',
+      responseLength: 'MODERATE',
+      focus: 'POSITIVE_REINFORCEMENT'
+    };
+  }
+  
+  // Default for neutral/general conversations
+  return {
+    tone: 'NEUTRAL_HELPFUL',
+    priority: 'LOW',
+    action: 'PROVIDE_INFORMATION',
+    empathyLevel: 'MEDIUM',
+    responseSpeed: 'NORMAL',
+    responseLength: 'VARIABLE',
+    focus: 'INFORMATION_PROVISION'
+  };
+}
+
+// 🔧 UPDATED calculateHealthcareStressScore with better logic
+function calculateHealthcareStressScore(text, moodScore) {
+  const textLower = text.toLowerCase();
+  
+  let stressScore = 0.5; // Base
+  
+  // 1. Mood impact (negative mood increases stress)
+  if (moodScore < 0) {
+    stressScore += Math.abs(moodScore) * 0.4; // Reduced from 0.5
+  } else if (moodScore > 0.7) {
+    // Very positive mood reduces baseline stress
+    stressScore -= 0.2;
+  }
+  
+  // 2. Urgency indicators (weighted)
+  if (textLower.includes('911')) stressScore += 0.4;
+  else if (textLower.includes('emergency')) stressScore += 0.3;
+  else if (textLower.includes('urgent')) stressScore += 0.2;
+  else if (textLower.includes('asap') || textLower.includes('immediately')) stressScore += 0.15;
+  
+  // 3. Pain indicators
+  const severePainWords = ['unbearable', 'excruciating', 'severe'];
+  const moderatePainWords = ['pain', 'hurt', 'aching', 'sore'];
+  
+  if (severePainWords.some(word => textLower.includes(word))) stressScore += 0.3;
+  else if (moderatePainWords.some(word => textLower.includes(word))) stressScore += 0.15;
+  
+  // 4. Medical context (increases stress relevance)
+  const medicalWords = ['hospital', 'doctor', 'clinic', 'er', 'emergency room'];
+  if (medicalWords.some(word => textLower.includes(word))) stressScore += 0.1;
+  
+  // 5. Punctuation intensity (improved)
+  const exclamationCount = (text.match(/!/g) || []).length;
+  const questionCount = (text.match(/\?/g) || []).length;
+  
+  // Multiple exclamations = high stress
+  if (exclamationCount >= 3) stressScore += 0.25;
+  else if (exclamationCount === 2) stressScore += 0.15;
+  else if (exclamationCount === 1) stressScore += 0.08;
+  
+  // Multiple questions = uncertainty stress
+  if (questionCount >= 3) stressScore += 0.15;
+  
+  // 6. Text characteristics
+  if (text.length > 200) stressScore += 0.1; // Long messages might indicate detailed concern
+  
+  // 7. ALL CAPS intensity (reduced impact)
+  const capsCount = (text.match(/[A-Z]/g) || []).length;
+  const capsRatio = capsCount / text.length;
+  if (capsRatio > 0.5) stressScore += 0.15; // Reduced from 0.2
+  else if (capsRatio > 0.3) stressScore += 0.1;
+  
+  // 8. Negative emotion words (direct impact)
+  const highStressWords = ['panic', 'anxiety', 'overwhelmed', 'cant cope', 'breaking down'];
+  const mediumStressWords = ['worried', 'scared', 'nervous', 'stressed', 'anxious'];
+  
+  if (highStressWords.some(word => textLower.includes(word))) stressScore += 0.25;
+  else if (mediumStressWords.some(word => textLower.includes(word))) stressScore += 0.15;
+  
+  // Clamp between 0 and 1
+  return Math.min(1, Math.max(0, stressScore));
 }
 
 /* ===============================
