@@ -226,44 +226,129 @@ app.post("/api/mood/batch", async (req, res) => {
       
       try {
         // Analyze the batch with DistilBERT
-        let batchResult;
+        let batchEnhancedAnalysis;
         if (sentimentAnalyzer) {
           const distilbertResult = await sentimentAnalyzer(batchText);
           const mainResult = distilbertResult[0];
-          const isPositive = mainResult.label === 'POSITIVE';
-          const moodScore = isPositive ? mainResult.score : -mainResult.score;
+          
+          // 🔥 UPDATED: Use the NEW improved functions
+          batchEnhancedAnalysis = enhanceWithHealthcareContext(
+            batchText, 
+            mainResult.label, 
+            mainResult.score, 
+            'user'
+          );
           
           batchResult = {
-            moodScore: parseFloat(moodScore.toFixed(3)),
-            confidence: mainResult.score,
+            moodScore: batchEnhancedAnalysis.moodScore,
+            confidence: batchEnhancedAnalysis.confidence,
+            stressScore: batchEnhancedAnalysis.stressScore,
+            emotion: batchEnhancedAnalysis.emotion,
+            isCrisis: batchEnhancedAnalysis.isCrisis,
             analyzedAt: new Date().toISOString()
           };
         } else {
           // Fallback to simple analysis
-          batchResult = analyzeSentimentSimple(batchText, 'user');
+          batchEnhancedAnalysis = analyzeSentimentSimple(batchText, 'user');
+          batchResult = {
+            moodScore: batchEnhancedAnalysis.moodScore,
+            confidence: batchEnhancedAnalysis.confidence || 0.7,
+            stressScore: batchEnhancedAnalysis.stressScore,
+            emotion: batchEnhancedAnalysis.emotion,
+            isCrisis: batchEnhancedAnalysis.isCrisis,
+            analyzedAt: new Date().toISOString()
+          };
         }
 
         // Apply batch result to each individual message with variations
         for (const [msgIndex, message] of batch.entries()) {
-          // Add some variation based on message content
-          const variationFactor = (msgIndex / batch.length) * 0.1; // Small variation
-          const adjustedMoodScore = Math.max(-1, Math.min(1, 
-            batchResult.moodScore + (Math.random() * 0.2 - 0.1) + variationFactor
-          ));
+          // 🔥 UPDATED: Analyze each message INDIVIDUALLY for better accuracy
+          let individualAnalysis;
+          if (sentimentAnalyzer) {
+            try {
+              const individualResult = await sentimentAnalyzer(message.text);
+              const mainIndividualResult = individualResult[0];
+              
+              individualAnalysis = enhanceWithHealthcareContext(
+                message.text, 
+                mainIndividualResult.label, 
+                mainIndividualResult.score, 
+                message.analyzeFor || 'user'
+              );
+            } catch (indError) {
+              // Fall back to batch analysis with individual adjustments
+              console.warn('Individual analysis failed, using adjusted batch result:', indError.message);
+              
+              // Calculate adjusted scores based on message content
+              const textLower = message.text.toLowerCase();
+              let adjustedMoodScore = batchResult.moodScore;
+              let adjustedStressScore = batchResult.stressScore;
+              let adjustedEmotion = batchResult.emotion;
+              
+              // Apply content-based adjustments
+              if (textLower.includes('anxious') || textLower.includes('worried')) {
+                adjustedEmotion = 'anxious';
+                adjustedStressScore = Math.min(1, batchResult.stressScore + 0.2);
+              }
+              
+              if (textLower.includes('pain') || textLower.includes('hurt')) {
+                adjustedEmotion = textLower.includes('unbearable') ? 'high-stress' : 'stressed';
+                adjustedStressScore = Math.min(1, batchResult.stressScore + 0.3);
+              }
+              
+              if (textLower.includes('good') || textLower.includes('great') || textLower.includes('fine')) {
+                adjustedEmotion = 'positive';
+                adjustedStressScore = Math.max(0, batchResult.stressScore - 0.2);
+              }
+              
+              // Check for crisis keywords
+              const crisisKeywords = ['suicide', 'kill myself', 'want to die', 'end my life'];
+              const hasCrisisKeyword = crisisKeywords.some(keyword => textLower.includes(keyword));
+              
+              if (hasCrisisKeyword) {
+                adjustedEmotion = 'crisis';
+                adjustedStressScore = 0.95;
+              }
+              
+              individualAnalysis = {
+                moodScore: adjustedMoodScore,
+                stressScore: adjustedStressScore,
+                emotion: adjustedEmotion,
+                isCrisis: hasCrisisKeyword || (adjustedStressScore > 0.85 && adjustedMoodScore < -0.6),
+                confidence: batchResult.confidence * 0.9, // Slightly lower confidence for fallback
+                healthcareContext: {
+                  hasCrisisKeyword,
+                  hasUrgency: textLower.includes('urgent') || textLower.includes('emergency'),
+                  mentionsPain: textLower.includes('pain') || textLower.includes('hurt'),
+                  mentionsMedication: textLower.includes('medication') || textLower.includes('pill'),
+                  wordCount: message.text.split(' ').length,
+                  hasQuestion: message.text.includes('?'),
+                  hasExclamation: message.text.includes('!'),
+                  allCapsRatio: (message.text.match(/[A-Z]/g)?.length || 0) / message.text.length || 0
+                },
+                suggestedResponseTone: getEnhancedSuggestedTone(
+                  adjustedMoodScore,
+                  adjustedStressScore,
+                  hasCrisisKeyword || (adjustedStressScore > 0.85 && adjustedMoodScore < -0.6),
+                  'user',
+                  0.5,
+                  textLower.includes('pain') || textLower.includes('hurt'),
+                  textLower.includes('medication') || textLower.includes('pill')
+                ),
+                modelUsed: 'distilbert-fallback',
+                analyzedAt: new Date().toISOString()
+              };
+            }
+          } else {
+            // No sentiment analyzer - use simple analysis for each message
+            individualAnalysis = analyzeSentimentSimple(message.text, message.analyzeFor || 'user');
+          }
           
-          // Enhanced healthcare context for each message
-          const enhancedAnalysis = enhanceWithHealthcareContext(
-            message.text, 
-            batchResult.moodScore > 0 ? 'POSITIVE' : 'NEGATIVE',
-            Math.abs(batchResult.confidence || 0.7),
-            message.analyzeFor || 'user'
-          );
-          
-          // Add some individual variation to stress score
+          // Add some individual variation to stress score based on punctuation
           const stressVariation = message.text.includes('?') ? 0.1 : 
-                                message.text.includes('!') ? 0.2 : 0;
+                                message.text.includes('!') ? 0.08 : 0;
           const adjustedStressScore = Math.min(1, 
-            enhancedAnalysis.stressScore + stressVariation
+            individualAnalysis.stressScore + stressVariation
           );
           
           individualResults.push({
@@ -274,12 +359,14 @@ app.post("/api/mood/batch", async (req, res) => {
             timestamp: message.timestamp || new Date().toISOString(),
             isUser: message.isUser !== false,
             analysis: {
-              moodScore: parseFloat(adjustedMoodScore.toFixed(3)),
+              moodScore: parseFloat(individualAnalysis.moodScore.toFixed(3)),
               stressScore: parseFloat(adjustedStressScore.toFixed(3)),
-              emotion: categorizeEmotion(adjustedMoodScore, adjustedStressScore, 'user'),
-              isCrisis: enhancedAnalysis.isCrisis,
-              confidence: Math.min(1, (batchResult.confidence || 0.7) * 0.9),
-              healthcareContext: enhancedAnalysis.healthcareContext,
+              emotion: individualAnalysis.emotion,
+              isCrisis: individualAnalysis.isCrisis,
+              confidence: parseFloat((individualAnalysis.confidence || 0.7).toFixed(3)),
+              healthcareContext: individualAnalysis.healthcareContext,
+              suggestedResponseTone: individualAnalysis.suggestedResponseTone,
+              modelUsed: individualAnalysis.modelUsed || (sentimentAnalyzer ? 'distilbert' : 'simple'),
               analyzedAt: new Date().toISOString(),
               isBatchAnalyzed: true,
               batchId: batchIndex
@@ -302,10 +389,23 @@ app.post("/api/mood/batch", async (req, res) => {
             messageId: message.id || `fallback-${Date.now()}-${Math.random()}`,
             textPreview: message.text.substring(0, 30) + '...',
             analysis: {
-              ...simpleAnalysis,
+              moodScore: simpleAnalysis.moodScore,
+              stressScore: simpleAnalysis.stressScore,
+              emotion: simpleAnalysis.emotion,
+              isCrisis: simpleAnalysis.isCrisis,
+              confidence: simpleAnalysis.confidence,
+              healthcareContext: simpleAnalysis.healthcareContext,
+              suggestedResponseTone: getSuggestedTone(
+                simpleAnalysis.moodScore,
+                simpleAnalysis.stressScore,
+                simpleAnalysis.isCrisis,
+                'user'
+              ),
+              modelUsed: 'simple-fallback',
+              analyzedAt: new Date().toISOString(),
               isBatchAnalyzed: true,
               isFallback: true,
-              analyzedAt: new Date().toISOString()
+              batchId: batchIndex
             }
           });
           
@@ -338,8 +438,8 @@ app.post("/api/mood/batch", async (req, res) => {
         conversationId,
         userId,
         analyzedAt: new Date().toISOString(),
-        modelUsed: sentimentAnalyzer ? 'distilbert-batch' : 'simple-batch',
-        version: '1.0'
+        modelUsed: sentimentAnalyzer ? 'distilbert-enhanced-batch' : 'simple-enhanced-batch',
+        version: '2.0' // Updated version
       }
     });
     
