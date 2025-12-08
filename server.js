@@ -21,7 +21,6 @@ app.use(cors());
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const upload = multer({ storage: multer.memoryStorage() });
 
-
 let sentimentAnalyzer = null;
 (async () => {
   try {
@@ -54,7 +53,6 @@ app.get("/api/test", (req, res) => {
   res.json({ message: "Server is working!", timestamp: new Date() });
 });
 
-
 /* ===============================
    🧠 MOOD ANALYSIS ENDPOINT (DistilBERT) - UPDATED WITH BATCH SUPPORT
 =================================*/
@@ -64,13 +62,10 @@ app.post("/api/mood", async (req, res) => {
     
     // Support batch mode as alternative
     if (batchMode && Array.isArray(text)) {
-      // Process as mini-batch
       console.log(`🧠 Mini-batch requested for ${text.length} messages`);
-      
       const batchResults = [];
       for (const [index, singleText] of text.entries()) {
         try {
-          // Reuse existing analysis logic
           if (!sentimentAnalyzer) {
             const simpleResult = analyzeSentimentSimple(singleText, analyzeFor);
             batchResults.push({
@@ -82,16 +77,12 @@ app.post("/api/mood", async (req, res) => {
           } else {
             const distilbertResult = await sentimentAnalyzer(singleText);
             const mainResult = distilbertResult[0];
-            const isPositive = mainResult.label === 'POSITIVE';
-            const moodScore = isPositive ? mainResult.score : -mainResult.score;
-            
             const enhancedAnalysis = enhanceWithHealthcareContext(
               singleText, 
               mainResult.label, 
               mainResult.score, 
               analyzeFor
             );
-            
             batchResults.push({
               text: singleText.substring(0, 100) + (singleText.length > 100 ? '...' : ''),
               ...enhancedAnalysis,
@@ -108,7 +99,6 @@ app.post("/api/mood", async (req, res) => {
           });
         }
       }
-      
       return res.json({
         success: true,
         batchMode: true,
@@ -129,7 +119,6 @@ app.post("/api/mood", async (req, res) => {
 
     console.log(`🧠 Mood analysis requested for ${analyzeFor}:`, text.substring(0, 100) + '...');
 
-    // If DistilBERT isn't loaded yet, use simple analysis
     if (!sentimentAnalyzer) {
       console.log("⚠️ DistilBERT not loaded, using simple analysis");
       const simpleResult = analyzeSentimentSimple(text, analyzeFor);
@@ -141,20 +130,13 @@ app.post("/api/mood", async (req, res) => {
       });
     }
 
-    // Use DistilBERT for analysis
-    console.log("🧠 Analyzing with DistilBERT...");
-    
-    // DistilBERT returns array of results
     const distilbertResult = await sentimentAnalyzer(text);
-    
-    // Extract the main result
     const mainResult = distilbertResult[0];
-    const label = mainResult.label; // 'POSITIVE' or 'NEGATIVE'
-    const score = mainResult.score; // Confidence score 0-1
+    const label = mainResult.label;
+    const score = mainResult.score;
     
     console.log(`📊 DistilBERT result: ${label} (${score.toFixed(4)})`);
     
-    // Enhanced healthcare-specific analysis
     const enhancedAnalysis = enhanceWithHealthcareContext(text, label, score, analyzeFor);
     
     res.json({
@@ -168,10 +150,7 @@ app.post("/api/mood", async (req, res) => {
     
   } catch (error) {
     console.error("❌ Mood analysis error:", error);
-    
-    // Fallback to simple analysis
     const simpleResult = analyzeSentimentSimple(req.body?.text || '', req.body?.analyzeFor || 'user');
-    
     res.json({
       success: true,
       ...simpleResult,
@@ -184,7 +163,6 @@ app.post("/api/mood", async (req, res) => {
 
 /* ================================
    🔄 BATCH MOOD ANALYSIS ENDPOINT
-   (Efficient analysis of multiple messages)
 =================================*/
 app.post("/api/mood/batch", async (req, res) => {
   try {
@@ -205,11 +183,8 @@ app.post("/api/mood/batch", async (req, res) => {
     console.log(`🧠 Batch analysis requested for ${messages.length} messages`);
     console.log(`📊 Analysis type: ${analysisType}, Conversation: ${conversationId || 'N/A'}`);
 
-    // Track individual results
     const individualResults = [];
     let processedCount = 0;
-    
-    // Process messages in batches of 5 for better performance
     const batchSize = 5;
     const batches = [];
     
@@ -217,28 +192,22 @@ app.post("/api/mood/batch", async (req, res) => {
       batches.push(messages.slice(i, i + batchSize));
     }
 
-    // Process each batch
     for (const [batchIndex, batch] of batches.entries()) {
       console.log(`📦 Processing batch ${batchIndex + 1}/${batches.length} (${batch.length} messages)`);
       
-      // Create batch text for analysis
       const batchText = batch.map(msg => msg.text).join('\n---\n');
       
       try {
-        // Analyze the batch with DistilBERT
-        let batchEnhancedAnalysis;
+        let batchResult;
         if (sentimentAnalyzer) {
           const distilbertResult = await sentimentAnalyzer(batchText);
           const mainResult = distilbertResult[0];
-          
-          // 🔥 UPDATED: Use the NEW improved functions
-          batchEnhancedAnalysis = enhanceWithHealthcareContext(
+          const batchEnhancedAnalysis = enhanceWithHealthcareContext(
             batchText, 
             mainResult.label, 
             mainResult.score, 
             'user'
           );
-          
           batchResult = {
             moodScore: batchEnhancedAnalysis.moodScore,
             confidence: batchEnhancedAnalysis.confidence,
@@ -248,8 +217,7 @@ app.post("/api/mood/batch", async (req, res) => {
             analyzedAt: new Date().toISOString()
           };
         } else {
-          // Fallback to simple analysis
-          batchEnhancedAnalysis = analyzeSentimentSimple(batchText, 'user');
+          const batchEnhancedAnalysis = analyzeSentimentSimple(batchText, 'user');
           batchResult = {
             moodScore: batchEnhancedAnalysis.moodScore,
             confidence: batchEnhancedAnalysis.confidence || 0.7,
@@ -260,15 +228,12 @@ app.post("/api/mood/batch", async (req, res) => {
           };
         }
 
-        // Apply batch result to each individual message with variations
         for (const [msgIndex, message] of batch.entries()) {
-          // 🔥 UPDATED: Analyze each message INDIVIDUALLY for better accuracy
           let individualAnalysis;
           if (sentimentAnalyzer) {
             try {
               const individualResult = await sentimentAnalyzer(message.text);
               const mainIndividualResult = individualResult[0];
-              
               individualAnalysis = enhanceWithHealthcareContext(
                 message.text, 
                 mainIndividualResult.label, 
@@ -276,16 +241,12 @@ app.post("/api/mood/batch", async (req, res) => {
                 message.analyzeFor || 'user'
               );
             } catch (indError) {
-              // Fall back to batch analysis with individual adjustments
               console.warn('Individual analysis failed, using adjusted batch result:', indError.message);
-              
-              // Calculate adjusted scores based on message content
               const textLower = message.text.toLowerCase();
               let adjustedMoodScore = batchResult.moodScore;
               let adjustedStressScore = batchResult.stressScore;
               let adjustedEmotion = batchResult.emotion;
               
-              // Apply content-based adjustments
               if (textLower.includes('anxious') || textLower.includes('worried')) {
                 adjustedEmotion = 'anxious';
                 adjustedStressScore = Math.min(1, batchResult.stressScore + 0.2);
@@ -301,7 +262,6 @@ app.post("/api/mood/batch", async (req, res) => {
                 adjustedStressScore = Math.max(0, batchResult.stressScore - 0.2);
               }
               
-              // Check for crisis keywords
               const crisisKeywords = ['suicide', 'kill myself', 'want to die', 'end my life'];
               const hasCrisisKeyword = crisisKeywords.some(keyword => textLower.includes(keyword));
               
@@ -315,7 +275,7 @@ app.post("/api/mood/batch", async (req, res) => {
                 stressScore: adjustedStressScore,
                 emotion: adjustedEmotion,
                 isCrisis: hasCrisisKeyword || (adjustedStressScore > 0.85 && adjustedMoodScore < -0.6),
-                confidence: batchResult.confidence * 0.9, // Slightly lower confidence for fallback
+                confidence: batchResult.confidence * 0.9,
                 healthcareContext: {
                   hasCrisisKeyword,
                   hasUrgency: textLower.includes('urgent') || textLower.includes('emergency'),
@@ -340,11 +300,9 @@ app.post("/api/mood/batch", async (req, res) => {
               };
             }
           } else {
-            // No sentiment analyzer - use simple analysis for each message
             individualAnalysis = analyzeSentimentSimple(message.text, message.analyzeFor || 'user');
           }
           
-          // Add some individual variation to stress score based on punctuation
           const stressVariation = message.text.includes('?') ? 0.1 : 
                                 message.text.includes('!') ? 0.08 : 0;
           const adjustedStressScore = Math.min(1, 
@@ -380,11 +338,8 @@ app.post("/api/mood/batch", async (req, res) => {
         
       } catch (batchError) {
         console.error(`❌ Error processing batch ${batchIndex + 1}:`, batchError.message);
-        
-        // Fallback: Analyze each message individually with simple analysis
         for (const message of batch) {
           const simpleAnalysis = analyzeSentimentSimple(message.text, 'user');
-          
           individualResults.push({
             messageId: message.id || `fallback-${Date.now()}-${Math.random()}`,
             textPreview: message.text.substring(0, 30) + '...',
@@ -408,18 +363,15 @@ app.post("/api/mood/batch", async (req, res) => {
               batchId: batchIndex
             }
           });
-          
           processedCount++;
         }
       }
       
-      // Small delay between batches to avoid overwhelming the model
       if (batchIndex < batches.length - 1) {
         await new Promise(resolve => setTimeout(resolve, 100));
       }
     }
 
-    // Generate conversation-level insights
     const conversationInsights = generateConversationInsights(individualResults, messages);
 
     res.json({
@@ -439,13 +391,12 @@ app.post("/api/mood/batch", async (req, res) => {
         userId,
         analyzedAt: new Date().toISOString(),
         modelUsed: sentimentAnalyzer ? 'distilbert-enhanced-batch' : 'simple-enhanced-batch',
-        version: '2.0' // Updated version
+        version: '2.0'
       }
     });
     
   } catch (error) {
     console.error("❌ Batch analysis error:", error);
-    
     res.status(500).json({
       success: false,
       error: 'Batch analysis failed',
@@ -459,39 +410,28 @@ app.post("/api/mood/batch", async (req, res) => {
 });
 
 /* ===============================
-   🏥 Healthcare Context Enhancement
+   🏥 ENHANCED HEALTHCARE CONTEXT FUNCTIONS
 =================================*/
+
 function enhanceWithHealthcareContext(text, distilbertLabel, distilbertScore, analyzeFor) {
   const textLower = text.toLowerCase();
-  
-  // Convert DistilBERT output to our format
   const isPositive = distilbertLabel === 'POSITIVE';
-  
-  // Normalize score: -1 (very negative) to 1 (very positive)
   const moodScore = isPositive ? distilbertScore : -distilbertScore;
   
-  // 🔧 IMPROVED: Calculate stress score with context awareness
   let stressScore = calculateHealthcareStressScore(text, moodScore);
   
-  // 🔧 FIX 1: Adjust stress score based on mood positivity
   if (moodScore > 0.7) {
-    // Very positive messages get stress reduction
-    stressScore *= 0.6; // Reduce by 40%
+    stressScore *= 0.6;
   } else if (moodScore > 0.3) {
-    // Positive messages get moderate stress reduction
-    stressScore *= 0.8; // Reduce by 20%
+    stressScore *= 0.8;
   }
   
-  // 🔧 NEW: Adjust for exclamations in positive context
   if (moodScore > 0.5 && text.includes('!')) {
-    // Positive exclamations are less stressful
     stressScore *= 0.9;
   }
   
-  // Ensure stressScore stays within bounds
   stressScore = Math.min(1, Math.max(0, stressScore));
   
-  // Detect crisis keywords (healthcare-specific)
   const crisisKeywords = [
     'suicide', 'kill myself', 'end my life', 'want to die', 
     'self harm', 'self-harm', 'cutting', 'overdose',
@@ -500,20 +440,13 @@ function enhanceWithHealthcareContext(text, distilbertLabel, distilbertScore, an
   ];
   
   const hasCrisisKeyword = crisisKeywords.some(keyword => textLower.includes(keyword));
-  
-  // Detect urgency
   const urgencyKeywords = ['urgent', 'emergency', '911', 'immediately', 'now', 'asap'];
   const hasUrgency = urgencyKeywords.some(keyword => textLower.includes(keyword));
-  
-  // Detect pain mentions
   const painKeywords = ['pain', 'hurt', 'aching', 'sore', 'unbearable', 'excruciating'];
   const mentionsPain = painKeywords.some(keyword => textLower.includes(keyword));
-  
-  // Detect medication mentions
   const medKeywords = ['medication', 'pill', 'drug', 'prescription', 'dose', 'tablet'];
   const mentionsMedication = medKeywords.some(keyword => textLower.includes(keyword));
   
-  // 🔧 IMPROVED: Detect specific emotional keywords for better classification
   const emotionKeywords = {
     'anxious': ['anxious', 'worried', 'nervous', 'scared', 'afraid'],
     'happy': ['happy', 'great', 'good', 'excellent', 'wonderful', 'amazing'],
@@ -524,75 +457,54 @@ function enhanceWithHealthcareContext(text, distilbertLabel, distilbertScore, an
     'frustrated': ['frustrated', 'annoyed', 'irritated', 'fed up']
   };
   
-  // 🔧 NEW: Keyword-based emotion detection (takes precedence over scores)
   let keywordDetectedEmotion = null;
   for (const [emotion, keywords] of Object.entries(emotionKeywords)) {
     if (keywords.some(keyword => textLower.includes(keyword))) {
       keywordDetectedEmotion = emotion;
-      break; // First match wins
+      break;
     }
   }
   
-  // 🔧 IMPROVED: Determine emotion category with keyword priority
   let emotion;
   if (keywordDetectedEmotion) {
-    // Use keyword-detected emotion if found
     emotion = keywordDetectedEmotion;
   } else {
-    // Fall back to score-based categorization
     emotion = categorizeEmotionImproved(moodScore, stressScore, textLower, analyzeFor);
   }
   
-  // 🔧 IMPROVED: Determine if this is a crisis with better logic
   let isCrisis = false;
-  
   if (analyzeFor === 'user') {
-    // Level 1: Direct crisis keywords
     if (hasCrisisKeyword) {
       isCrisis = true;
-    }
-    // Level 2: High stress + negative mood combination
-    else if (stressScore > 0.8 && moodScore < -0.6) {
+    } else if (stressScore > 0.8 && moodScore < -0.6) {
       isCrisis = true;
-    }
-    // Level 3: Urgency + pain + negative mood
-    else if (hasUrgency && mentionsPain && moodScore < -0.4) {
+    } else if (hasUrgency && mentionsPain && moodScore < -0.4) {
       isCrisis = true;
-    }
-    // Level 4: Extreme negative emotion keywords
-    else if (keywordDetectedEmotion === 'sad' && stressScore > 0.7 && moodScore < -0.5) {
+    } else if (keywordDetectedEmotion === 'sad' && stressScore > 0.7 && moodScore < -0.5) {
       isCrisis = true;
     }
   }
   
-  // 🔧 NEW: Calculate confidence with healthcare context consideration
   let confidence = distilbertScore;
-  
-  // Increase confidence if we have clear healthcare context
   if (mentionsPain || mentionsMedication || hasUrgency) {
     confidence = Math.min(1, confidence * 1.1);
   }
-  
-  // Decrease confidence for very short messages
   if (text.split(' ').length < 3) {
     confidence *= 0.8;
   }
   
-  // 🔧 NEW: Enhanced healthcare context with intensity
   const wordCount = text.split(' ').length;
   const exclamationCount = (text.match(/!/g) || []).length;
   const questionCount = (text.match(/\?/g) || []).length;
   const capsCount = (text.match(/[A-Z]/g) || []).length;
   const capsRatio = capsCount / text.length || 0;
   
-  // Determine emotional intensity
   const emotionalIntensity = Math.min(1, 
     (exclamationCount * 0.2) + 
     (capsRatio > 0.3 ? 0.3 : 0) + 
     (wordCount > 50 ? 0.2 : 0)
   );
   
-  // 🔧 NEW: Enhanced suggested tone with more granularity
   const suggestedTone = getEnhancedSuggestedTone(
     moodScore, 
     stressScore, 
@@ -622,20 +534,66 @@ function enhanceWithHealthcareContext(text, distilbertLabel, distilbertScore, an
       questionCount,
       emotionalIntensity: parseFloat(emotionalIntensity.toFixed(3)),
       keywordDetectedEmotion,
-      containsPositiveKeywords: moodScore > 0.7 && textLower.includes('good') || textLower.includes('great'),
+      containsPositiveKeywords: moodScore > 0.7 && (textLower.includes('good') || textLower.includes('great')),
       containsNegativeKeywords: moodScore < -0.5 && (textLower.includes('bad') || textLower.includes('terrible'))
     },
     suggestedResponseTone: suggestedTone,
-    // 🔧 NEW: Add batch analysis metadata
     modelUsed: 'distilbert',
     analyzedAt: new Date().toISOString(),
     analysisType: analyzeFor === 'ai' ? 'ai_response' : 'user_input'
   };
 }
 
-// 🔧 NEW IMPROVED EMOTION CATEGORIZATION FUNCTION
+function calculateHealthcareStressScore(text, moodScore) {
+  const textLower = text.toLowerCase();
+  let stressScore = 0.5;
+  
+  if (moodScore < 0) {
+    stressScore += Math.abs(moodScore) * 0.4;
+  } else if (moodScore > 0.7) {
+    stressScore -= 0.2;
+  }
+  
+  if (textLower.includes('911')) stressScore += 0.4;
+  else if (textLower.includes('emergency')) stressScore += 0.3;
+  else if (textLower.includes('urgent')) stressScore += 0.2;
+  else if (textLower.includes('asap') || textLower.includes('immediately')) stressScore += 0.15;
+  
+  const severePainWords = ['unbearable', 'excruciating', 'severe'];
+  const moderatePainWords = ['pain', 'hurt', 'aching', 'sore'];
+  
+  if (severePainWords.some(word => textLower.includes(word))) stressScore += 0.3;
+  else if (moderatePainWords.some(word => textLower.includes(word))) stressScore += 0.15;
+  
+  const medicalWords = ['hospital', 'doctor', 'clinic', 'er', 'emergency room'];
+  if (medicalWords.some(word => textLower.includes(word))) stressScore += 0.1;
+  
+  const exclamationCount = (text.match(/!/g) || []).length;
+  const questionCount = (text.match(/\?/g) || []).length;
+  
+  if (exclamationCount >= 3) stressScore += 0.25;
+  else if (exclamationCount === 2) stressScore += 0.15;
+  else if (exclamationCount === 1) stressScore += 0.08;
+  
+  if (questionCount >= 3) stressScore += 0.15;
+  
+  if (text.length > 200) stressScore += 0.1;
+  
+  const capsCount = (text.match(/[A-Z]/g) || []).length;
+  const capsRatio = capsCount / text.length;
+  if (capsRatio > 0.5) stressScore += 0.15;
+  else if (capsRatio > 0.3) stressScore += 0.1;
+  
+  const highStressWords = ['panic', 'anxiety', 'overwhelmed', 'cant cope', 'breaking down'];
+  const mediumStressWords = ['worried', 'scared', 'nervous', 'stressed', 'anxious'];
+  
+  if (highStressWords.some(word => textLower.includes(word))) stressScore += 0.25;
+  else if (mediumStressWords.some(word => textLower.includes(word))) stressScore += 0.15;
+  
+  return Math.min(1, Math.max(0, stressScore));
+}
+
 function categorizeEmotionImproved(moodScore, stressScore, textLower, analyzeFor) {
-  // For AI responses
   if (analyzeFor === 'ai') {
     if (moodScore > 0.8) return 'empathetic';
     if (moodScore > 0.5) return 'supportive';
@@ -646,18 +604,13 @@ function categorizeEmotionImproved(moodScore, stressScore, textLower, analyzeFor
     return 'crisis';
   }
   
-  // For user messages - IMPROVED GRANULAR LOGIC
-  
-  // First handle extreme cases
   if (stressScore > 0.9 && moodScore < -0.8) return 'crisis';
   if (stressScore > 0.85) return 'high-stress';
   
-  // Handle positive-but-stressed cases (like excited anxiety)
   if (stressScore > 0.6 && moodScore > 0.3) return 'excited';
   if (stressScore > 0.6 && moodScore >= 0) return 'concerned';
   if (stressScore > 0.6 && moodScore < 0) return 'stressed';
   
-  // Pure mood-based classification
   if (moodScore > 0.85) return 'very-positive';
   if (moodScore > 0.7) return 'positive';
   if (moodScore > 0.5) return 'slightly-positive';
@@ -669,7 +622,6 @@ function categorizeEmotionImproved(moodScore, stressScore, textLower, analyzeFor
   return 'very-negative';
 }
 
-// 🔧 NEW ENHANCED SUGGESTED TONE FUNCTION
 function getEnhancedSuggestedTone(moodScore, stressScore, isCrisis, analyzeFor, emotionalIntensity, mentionsPain, mentionsMedication) {
   if (isCrisis) {
     return {
@@ -767,7 +719,6 @@ function getEnhancedSuggestedTone(moodScore, stressScore, isCrisis, analyzeFor, 
     };
   }
   
-  // Default for neutral/general conversations
   return {
     tone: 'NEUTRAL_HELPFUL',
     priority: 'LOW',
@@ -779,106 +730,11 @@ function getEnhancedSuggestedTone(moodScore, stressScore, isCrisis, analyzeFor, 
   };
 }
 
-// 🔧 UPDATED calculateHealthcareStressScore with better logic
-function calculateHealthcareStressScore(text, moodScore) {
-  const textLower = text.toLowerCase();
-  
-  let stressScore = 0.5; // Base
-  
-  // 1. Mood impact (negative mood increases stress)
-  if (moodScore < 0) {
-    stressScore += Math.abs(moodScore) * 0.4; // Reduced from 0.5
-  } else if (moodScore > 0.7) {
-    // Very positive mood reduces baseline stress
-    stressScore -= 0.2;
-  }
-  
-  // 2. Urgency indicators (weighted)
-  if (textLower.includes('911')) stressScore += 0.4;
-  else if (textLower.includes('emergency')) stressScore += 0.3;
-  else if (textLower.includes('urgent')) stressScore += 0.2;
-  else if (textLower.includes('asap') || textLower.includes('immediately')) stressScore += 0.15;
-  
-  // 3. Pain indicators
-  const severePainWords = ['unbearable', 'excruciating', 'severe'];
-  const moderatePainWords = ['pain', 'hurt', 'aching', 'sore'];
-  
-  if (severePainWords.some(word => textLower.includes(word))) stressScore += 0.3;
-  else if (moderatePainWords.some(word => textLower.includes(word))) stressScore += 0.15;
-  
-  // 4. Medical context (increases stress relevance)
-  const medicalWords = ['hospital', 'doctor', 'clinic', 'er', 'emergency room'];
-  if (medicalWords.some(word => textLower.includes(word))) stressScore += 0.1;
-  
-  // 5. Punctuation intensity (improved)
-  const exclamationCount = (text.match(/!/g) || []).length;
-  const questionCount = (text.match(/\?/g) || []).length;
-  
-  // Multiple exclamations = high stress
-  if (exclamationCount >= 3) stressScore += 0.25;
-  else if (exclamationCount === 2) stressScore += 0.15;
-  else if (exclamationCount === 1) stressScore += 0.08;
-  
-  // Multiple questions = uncertainty stress
-  if (questionCount >= 3) stressScore += 0.15;
-  
-  // 6. Text characteristics
-  if (text.length > 200) stressScore += 0.1; // Long messages might indicate detailed concern
-  
-  // 7. ALL CAPS intensity (reduced impact)
-  const capsCount = (text.match(/[A-Z]/g) || []).length;
-  const capsRatio = capsCount / text.length;
-  if (capsRatio > 0.5) stressScore += 0.15; // Reduced from 0.2
-  else if (capsRatio > 0.3) stressScore += 0.1;
-  
-  // 8. Negative emotion words (direct impact)
-  const highStressWords = ['panic', 'anxiety', 'overwhelmed', 'cant cope', 'breaking down'];
-  const mediumStressWords = ['worried', 'scared', 'nervous', 'stressed', 'anxious'];
-  
-  if (highStressWords.some(word => textLower.includes(word))) stressScore += 0.25;
-  else if (mediumStressWords.some(word => textLower.includes(word))) stressScore += 0.15;
-  
-  // Clamp between 0 and 1
-  return Math.min(1, Math.max(0, stressScore));
-}
-
 /* ===============================
-   📊 Helper Functions
+   📊 HELPER FUNCTIONS (OLD - KEPT FOR BACKWARD COMPATIBILITY)
 =================================*/
-function calculateHealthcareStressScore(text, moodScore) {
-  const textLower = text.toLowerCase();
-  
-  let stressScore = 0.5; // Base
-  
-  // Negative mood adds stress
-  if (moodScore < 0) {
-    stressScore += Math.abs(moodScore) * 0.5;
-  }
-  
-  // Urgency indicators
-  if (textLower.includes('urgent') || textLower.includes('emergency')) stressScore += 0.3;
-  if (textLower.includes('911')) stressScore += 0.4;
-  
-  // Pain indicators
-  if (textLower.includes('pain') || textLower.includes('hurt')) stressScore += 0.2;
-  
-  // Length (long messages might indicate distress)
-  if (text.length > 200) stressScore += 0.1;
-  
-  // Punctuation intensity
-  const exclamationCount = (text.match(/!/g) || []).length;
-  stressScore += Math.min(0.3, exclamationCount * 0.05);
-  
-  // ALL CAPS intensity
-  const capsCount = (text.match(/[A-Z]/g) || []).length;
-  const capsRatio = capsCount / text.length;
-  if (capsRatio > 0.3) stressScore += 0.2;
-  
-  return Math.min(1, Math.max(0, stressScore));
-}
 
 function categorizeEmotion(moodScore, stressScore, analyzeFor) {
-  // For AI responses
   if (analyzeFor === 'ai') {
     if (moodScore > 0.7) return 'empathetic';
     if (moodScore > 0.3) return 'supportive';
@@ -887,7 +743,6 @@ function categorizeEmotion(moodScore, stressScore, analyzeFor) {
     return 'urgent';
   }
   
-  // For user messages
   if (stressScore > 0.8 && moodScore < -0.7) return 'crisis';
   if (stressScore > 0.6) return 'high-stress';
   if (moodScore > 0.7) return 'positive';
@@ -948,8 +803,9 @@ function getSuggestedTone(moodScore, stressScore, isCrisis, analyzeFor) {
 }
 
 /* ================================
-   🧠 Generate Conversation Insights
+   🧠 CONVERSATION INSIGHTS FUNCTIONS
 =================================*/
+
 function generateConversationInsights(individualResults, originalMessages) {
   if (!individualResults || individualResults.length === 0) {
     return {
@@ -961,7 +817,6 @@ function generateConversationInsights(individualResults, originalMessages) {
     };
   }
 
-  // Calculate averages
   const validMoodScores = individualResults
     .filter(r => r.analysis && r.analysis.moodScore !== undefined)
     .map(r => r.analysis.moodScore);
@@ -978,7 +833,6 @@ function generateConversationInsights(individualResults, originalMessages) {
     ? validStressScores.reduce((a, b) => a + b, 0) / validStressScores.length
     : 0.5;
 
-  // Count emotions
   const emotionCounts = {};
   individualResults.forEach(result => {
     if (result.analysis && result.analysis.emotion) {
@@ -987,17 +841,14 @@ function generateConversationInsights(individualResults, originalMessages) {
     }
   });
 
-  // Get dominant emotions (top 3)
   const dominantEmotions = Object.entries(emotionCounts)
     .sort((a, b) => b[1] - a[1])
     .slice(0, 3)
     .map(([emotion, count]) => ({ emotion, count, percentage: (count / individualResults.length * 100).toFixed(1) }));
 
-  // Check for crises
   const crisisMessages = individualResults.filter(r => r.analysis && r.analysis.isCrisis);
   const crisisProbability = Math.min(1, crisisMessages.length / individualResults.length);
 
-  // Determine mood trend
   let moodTrend = 'stable';
   if (validMoodScores.length >= 4) {
     const half = Math.floor(validMoodScores.length / 2);
@@ -1008,7 +859,6 @@ function generateConversationInsights(individualResults, originalMessages) {
     else if (firstHalfAvg - secondHalfAvg > 0.3) moodTrend = 'worsening';
   }
 
-  // Generate recommendations
   const recommendations = generateRecommendations(
     avgMood, 
     avgStress, 
@@ -1017,7 +867,6 @@ function generateConversationInsights(individualResults, originalMessages) {
     dominantEmotions
   );
 
-  // Generate summary
   const summary = generateInsightSummary(
     avgMood,
     avgStress,
@@ -1046,13 +895,9 @@ function generateConversationInsights(individualResults, originalMessages) {
   };
 }
 
-/* ================================
-   💡 Generate Recommendations
-=================================*/
 function generateRecommendations(avgMood, avgStress, crisisProbability, moodTrend, dominantEmotions) {
   const recommendations = [];
 
-  // Crisis recommendations
   if (crisisProbability > 0.3) {
     recommendations.push({
       priority: 'HIGHEST',
@@ -1067,7 +912,6 @@ function generateRecommendations(avgMood, avgStress, crisisProbability, moodTren
     });
   }
 
-  // Stress recommendations
   if (avgStress > 0.7) {
     recommendations.push({
       priority: 'HIGH',
@@ -1082,7 +926,6 @@ function generateRecommendations(avgMood, avgStress, crisisProbability, moodTren
     });
   }
 
-  // Mood-based recommendations
   if (avgMood < -0.5) {
     recommendations.push({
       priority: 'HIGH',
@@ -1097,7 +940,6 @@ function generateRecommendations(avgMood, avgStress, crisisProbability, moodTren
     });
   }
 
-  // Emotion-specific recommendations
   const dominantEmotion = dominantEmotions[0]?.emotion;
   if (dominantEmotion === 'anxious' || dominantEmotion === 'stressed') {
     recommendations.push({
@@ -1113,7 +955,6 @@ function generateRecommendations(avgMood, avgStress, crisisProbability, moodTren
     });
   }
 
-  // Trend-based recommendations
   if (moodTrend === 'worsening') {
     recommendations.push({
       priority: 'MEDIUM_HIGH',
@@ -1128,7 +969,6 @@ function generateRecommendations(avgMood, avgStress, crisisProbability, moodTren
     });
   }
 
-  // General wellness recommendations
   if (recommendations.length === 0) {
     recommendations.push({
       priority: 'LOW',
@@ -1146,9 +986,6 @@ function generateRecommendations(avgMood, avgStress, crisisProbability, moodTren
   return recommendations;
 }
 
-/* ================================
-   📝 Generate Insight Summary
-=================================*/
 function generateInsightSummary(avgMood, avgStress, moodTrend, crisisCount, totalMessages) {
   const moodDescriptors = {
     'improving': 'improving',
@@ -1183,11 +1020,8 @@ function generateInsightSummary(avgMood, avgStress, moodTrend, crisisCount, tota
   return summary.trim();
 }
 
-// Simple fallback analysis (if DistilBERT fails)
 function analyzeSentimentSimple(text, analyzeFor) {
   const textLower = text.toLowerCase();
-  
-  // Simple keyword matching
   const positiveWords = ['good', 'great', 'better', 'improving', 'thanks', 'thank', 'happy', 'relieved', 'well', 'okay'];
   const negativeWords = ['bad', 'terrible', 'worse', 'pain', 'hurt', 'anxious', 'worried', 'scared', 'depressed', 'sick'];
   const crisisWords = ['suicide', 'kill myself', 'end my life', 'want to die', 'self harm', 'overdose'];
@@ -1196,7 +1030,6 @@ function analyzeSentimentSimple(text, analyzeFor) {
   const negativeCount = negativeWords.filter(word => textLower.includes(word)).length;
   const hasCrisisWord = crisisWords.some(word => textLower.includes(word));
   
-  // Calculate scores
   let moodScore = 0;
   if (positiveCount > negativeCount) {
     moodScore = 0.5 + (positiveCount * 0.1);
@@ -1204,10 +1037,7 @@ function analyzeSentimentSimple(text, analyzeFor) {
     moodScore = -0.5 - (negativeCount * 0.1);
   }
   
-  // Clamp between -1 and 1
   moodScore = Math.max(-1, Math.min(1, moodScore));
-  
-  // Stress score
   const stressScore = Math.min(1, negativeCount * 0.2 + (text.length > 100 ? 0.3 : 0));
   
   return {
@@ -1227,13 +1057,10 @@ function analyzeSentimentSimple(text, analyzeFor) {
 }
 
 /* ================================
-   📊 Get Batch Analysis Status
+   📊 BATCH STATUS ENDPOINT
 =================================*/
 app.get("/api/mood/batch/status/:batchId", async (req, res) => {
   const { batchId } = req.params;
-  
-  // In a real implementation, you'd track batch status in a database
-  // For now, return a mock status
   res.json({
     success: true,
     batchId,
@@ -1245,13 +1072,12 @@ app.get("/api/mood/batch/status/:batchId", async (req, res) => {
 });
 
 /* ===============================
-   📋 List Available Gemini Models
+   📋 GEMINI MODELS
 =================================*/
 app.get("/api/models", async (req, res) => {
   try {
     const response = await fetch(`https://generativelanguage.googleapis.com/v1/models?key=${process.env.GEMINI_API_KEY}`);
     const data = await response.json();
-    
     res.json({
       success: true,
       models: data.models?.map(m => ({
@@ -1269,7 +1095,7 @@ app.get("/api/models", async (req, res) => {
 });
 
 /* ===============================
-   💬 AI Chat (Groq)
+   💬 GROQ CHAT
 =================================*/
 app.post("/api/chat", async (req, res) => {
   const { message } = req.body;
@@ -1302,12 +1128,11 @@ app.post("/api/chat", async (req, res) => {
 });
 
 /* ===============================
-   📊 Insights (Groq Summary)
+   📊 INSIGHTS
 =================================*/
 app.post("/api/insights", async (req, res) => {
   try {
     const { stats, logs } = req.body;
-
     const summaryPrompt = `
       You are a medication adherence coach.
       Based on these stats: ${JSON.stringify(stats)}
@@ -1317,14 +1142,11 @@ app.post("/api/insights", async (req, res) => {
       Write a short, encouraging summary (≤3 sentences).
       Focus on patterns, improvements, and suggestions.
     `;
-
     const completion = await groq.chat.completions.create({
       model: "llama-3.1-8b-instant",
       messages: [{ role: "user", content: summaryPrompt }],
     });
-
-    const message =
-      completion.choices[0]?.message?.content || "No insights available.";
+    const message = completion.choices[0]?.message?.content || "No insights available.";
     res.json({ insight: message });
   } catch (error) {
     console.error("Insights error:", error);
@@ -1333,11 +1155,10 @@ app.post("/api/insights", async (req, res) => {
 });
 
 /* ===============================
-   📷 Image Scan (Gemini) - UPDATED WITH LATEST MODELS
+   📷 IMAGE SCAN
 =================================*/
 app.post("/api/scan", upload.single("file"), async (req, res) => {
   console.log("📸 /api/scan called");
-  
   try {
     if (!req.file) {
       console.log("❌ No file uploaded");
@@ -1362,10 +1183,7 @@ app.post("/api/scan", upload.single("file"), async (req, res) => {
     }
 
     const base64Data = req.file.buffer.toString("base64");
-
-    // Use the latest Gemini 2.5 Flash model
     const modelName = "gemini-2.5-flash";
-    
     const prompt = `
       You are a medical assistant analyzing a prescription or medication image.
       Extract all readable text and identify:
@@ -1382,30 +1200,19 @@ app.post("/api/scan", upload.single("file"), async (req, res) => {
     `;
 
     console.log("🚀 Sending to Gemini 2.5 Flash...");
-
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1/models/${modelName}:generateContent?key=${process.env.GEMINI_API_KEY}`,
       {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents: [{
             parts: [
               { text: prompt },
-              {
-                inlineData: {
-                  mimeType: mimeType,
-                  data: base64Data
-                }
-              }
+              { inlineData: { mimeType: mimeType, data: base64Data } }
             ]
           }],
-          generationConfig: {
-            temperature: 0.1,
-            maxOutputTokens: 1000,
-          }
+          generationConfig: { temperature: 0.1, maxOutputTokens: 1000 }
         })
       }
     );
@@ -1436,7 +1243,6 @@ app.post("/api/scan", upload.single("file"), async (req, res) => {
     
   } catch (error) {
     console.error("❌ Scan error:", error.message);
-    
     res.status(500).json({
       error: "Image analysis failed",
       details: error.message,
@@ -1446,61 +1252,7 @@ app.post("/api/scan", upload.single("file"), async (req, res) => {
 });
 
 /* ===============================
-   🔍 Test Gemini API Key
-=================================*/
-app.get("/api/test-gemini", async (req, res) => {
-  try {
-    if (!process.env.GEMINI_API_KEY) {
-      return res.status(500).json({ error: "Gemini API key missing" });
-    }
-
-    console.log("🔧 Testing API key:", process.env.GEMINI_API_KEY.substring(0, 10) + "...");
-
-    // Use gemini-2.5-flash for testing
-    const modelName = "gemini-2.5-flash";
-    
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1/models/${modelName}:generateContent?key=${process.env.GEMINI_API_KEY}`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          contents: [{
-            parts: [{ text: "Hello, respond with 'OK' if working." }]
-          }]
-        })
-      }
-    );
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`GenerateContent failed: ${errorText}`);
-    }
-
-    const data = await response.json();
-    const responseText = data.candidates[0].content.parts[0].text;
-
-    res.json({
-      success: true,
-      message: "Gemini API is working!",
-      workingModel: modelName,
-      response: responseText
-    });
-
-  } catch (error) {
-    console.error("❌ Gemini test failed:", error.message);
-    
-    res.status(500).json({
-      error: "Gemini API test failed",
-      details: error.message
-    });
-  }
-});
-
-/* ===============================
-   🎤 Voice Transcription - IMPROVED VERSION
+   🎤 VOICE TRANSCRIPTION
 =================================*/
 app.post("/api/transcribe", upload.single("file"), async (req, res) => {
   try {
@@ -1515,63 +1267,41 @@ app.post("/api/transcribe", upload.single("file"), async (req, res) => {
       bufferLength: req.file.buffer.length
     });
 
-    // Determine the correct MIME type based on file extension
     let mimeType = req.file.mimetype;
     if (mimeType === 'application/octet-stream') {
-      // Detect MIME type from filename
-      if (req.file.originalname.endsWith('.m4a')) {
-        mimeType = 'audio/mp4';
-      } else if (req.file.originalname.endsWith('.mp3')) {
-        mimeType = 'audio/mpeg';
-      } else if (req.file.originalname.endsWith('.wav')) {
-        mimeType = 'audio/wav';
-      } else if (req.file.originalname.endsWith('.webm')) {
-        mimeType = 'audio/webm';
-      } else {
-        mimeType = 'audio/mpeg'; // default fallback
-      }
+      if (req.file.originalname.endsWith('.m4a')) mimeType = 'audio/mp4';
+      else if (req.file.originalname.endsWith('.mp3')) mimeType = 'audio/mpeg';
+      else if (req.file.originalname.endsWith('.wav')) mimeType = 'audio/wav';
+      else if (req.file.originalname.endsWith('.webm')) mimeType = 'audio/webm';
+      else mimeType = 'audio/mpeg';
       console.log(`🔧 Corrected MIME type from ${req.file.mimetype} to ${mimeType}`);
     }
 
-    // Try to use Gemini for transcription (for files under 4MB)
     if (req.file.size < 4 * 1024 * 1024) {
       try {
         const base64Audio = req.file.buffer.toString("base64");
         const modelName = "gemini-2.5-flash";
-        
         const prompt = `
           Listen to this audio message and transcribe it accurately. 
           The user is speaking to a medical assistant about health concerns, medications, or symptoms.
           Provide a clear, verbatim transcription of everything you hear.
-          If there are unclear parts, transcribe what you can and note any uncertainties.
           IMPORTANT: Respond ONLY with the transcription, no additional commentary.
         `;
 
         console.log("🎯 Attempting Gemini transcription...");
-
         const response = await fetch(
           `https://generativelanguage.googleapis.com/v1/models/${modelName}:generateContent?key=${process.env.GEMINI_API_KEY}`,
           {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               contents: [{
                 parts: [
                   { text: prompt },
-                  {
-                    inlineData: {
-                      mimeType: mimeType,
-                      data: base64Audio
-                    }
-                  }
+                  { inlineData: { mimeType: mimeType, data: base64Audio } }
                 ]
               }],
-              generationConfig: {
-                temperature: 0.1,
-                maxOutputTokens: 1000,
-              }
+              generationConfig: { temperature: 0.1, maxOutputTokens: 1000 }
             })
           }
         );
@@ -1580,10 +1310,7 @@ app.post("/api/transcribe", upload.single("file"), async (req, res) => {
           const data = await response.json();
           if (data.candidates && data.candidates[0] && data.candidates[0].content) {
             const transcript = data.candidates[0].content.parts[0].text;
-            
             console.log("✅ Gemini transcription successful:", transcript.substring(0, 100) + "...");
-            
-            // Check if the response is actually a transcription or an error
             if (transcript && !transcript.includes("I cannot") && !transcript.includes("audio format") && transcript.length > 10) {
               return res.json({
                 transcript: transcript.trim(),
@@ -1613,9 +1340,7 @@ app.post("/api/transcribe", upload.single("file"), async (req, res) => {
       console.log("📁 File too large for Gemini transcription:", req.file.size, "bytes");
     }
 
-    // Enhanced Groq fallback with better context
     console.log("🔄 Using enhanced Groq fallback for transcription");
-    
     const prompt = `
       A user recorded a ${Math.round(req.file.size/1024)}KB voice message for a medical assistant.
       Create a SHORT, warm response that:
@@ -1637,11 +1362,10 @@ app.post("/api/transcribe", upload.single("file"), async (req, res) => {
     let message = completion.choices[0]?.message?.content ||
       "Thanks for your voice message! We're working on better voice recognition. For now, typing will get you the fastest help.";
     
-    // Clean up the response
     message = message
       .replace(/^"(.*)"$/, '$1')
       .replace(/^\"(.*)\"$/, '$1')
-      .replace(/\.$/, '') // Remove trailing period
+      .replace(/\.$/, '')
       .trim();
 
     console.log("🎯 Groq fallback response:", message);
@@ -1670,7 +1394,53 @@ app.post("/api/transcribe", upload.single("file"), async (req, res) => {
 });
 
 /* ===============================
-   ⚙️ Server Startup
+   🔍 TEST GEMINI
+=================================*/
+app.get("/api/test-gemini", async (req, res) => {
+  try {
+    if (!process.env.GEMINI_API_KEY) {
+      return res.status(500).json({ error: "Gemini API key missing" });
+    }
+
+    console.log("🔧 Testing API key:", process.env.GEMINI_API_KEY.substring(0, 10) + "...");
+    const modelName = "gemini-2.5-flash";
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1/models/${modelName}:generateContent?key=${process.env.GEMINI_API_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: "Hello, respond with 'OK' if working." }] }]
+        })
+      }
+    );
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`GenerateContent failed: ${errorText}`);
+    }
+
+    const data = await response.json();
+    const responseText = data.candidates[0].content.parts[0].text;
+
+    res.json({
+      success: true,
+      message: "Gemini API is working!",
+      workingModel: modelName,
+      response: responseText
+    });
+
+  } catch (error) {
+    console.error("❌ Gemini test failed:", error.message);
+    res.status(500).json({
+      error: "Gemini API test failed",
+      details: error.message
+    });
+  }
+});
+
+/* ===============================
+   ⚙️ SERVER STARTUP
 =================================*/
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, "0.0.0.0", () => {
