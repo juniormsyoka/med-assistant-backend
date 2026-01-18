@@ -4,11 +4,12 @@ import multer from "multer";
 import Groq from "groq-sdk";
 import dotenv from "dotenv";
 import cors from "cors";
-
-import { pipeline } from '@xenova/transformers';
+import PatternDetector from "./services/PatternDetector.js";
 
 dotenv.config();
-console.log("DEBUG: Loaded GEMINI KEY?", process.env.GEMINI_API_KEY);
+
+// Import routes
+import moodRoutes from "./routes/moodRoutes.js";
 
 const app = express();
 app.use(bodyParser.json({ limit: '10mb' }));
@@ -20,19 +21,6 @@ app.use(cors());
 =================================*/
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const upload = multer({ storage: multer.memoryStorage() });
-
-let sentimentAnalyzer = null;
-(async () => {
-  try {
-    console.log("🧠 Loading DistilBERT sentiment model...");
-    sentimentAnalyzer = await pipeline('sentiment-analysis', 
-      'Xenova/distilbert-base-uncased-finetuned-sst-2-english');
-    console.log("✅ DistilBERT loaded successfully!");
-  } catch (error) {
-    console.error("❌ Failed to load DistilBERT:", error.message);
-    sentimentAnalyzer = null;
-  }
-})();
 
 // Request logging middleware
 app.use((req, res, next) => {
@@ -54,1022 +42,9 @@ app.get("/api/test", (req, res) => {
 });
 
 /* ===============================
-   🧠 MOOD ANALYSIS ENDPOINT (DistilBERT) - UPDATED WITH BATCH SUPPORT
+   🧠 MOOD ROUTES
 =================================*/
-app.post("/api/mood", async (req, res) => {
-  try {
-    const { text, analyzeFor = 'user', batchMode = false } = req.body;
-    
-    // Support batch mode as alternative
-    if (batchMode && Array.isArray(text)) {
-      console.log(`🧠 Mini-batch requested for ${text.length} messages`);
-      const batchResults = [];
-      for (const [index, singleText] of text.entries()) {
-        try {
-          if (!sentimentAnalyzer) {
-            const simpleResult = analyzeSentimentSimple(singleText, analyzeFor);
-            batchResults.push({
-              text: singleText.substring(0, 100) + (singleText.length > 100 ? '...' : ''),
-              ...simpleResult,
-              index,
-              success: true
-            });
-          } else {
-            const distilbertResult = await sentimentAnalyzer(singleText);
-            const mainResult = distilbertResult[0];
-            const enhancedAnalysis = enhanceWithHealthcareContext(
-              singleText, 
-              mainResult.label, 
-              mainResult.score, 
-              analyzeFor
-            );
-            batchResults.push({
-              text: singleText.substring(0, 100) + (singleText.length > 100 ? '...' : ''),
-              ...enhancedAnalysis,
-              index,
-              success: true
-            });
-          }
-        } catch (error) {
-          batchResults.push({
-            text: singleText.substring(0, 100) + (singleText.length > 100 ? '...' : ''),
-            error: error.message,
-            index,
-            success: false
-          });
-        }
-      }
-      return res.json({
-        success: true,
-        batchMode: true,
-        totalProcessed: batchResults.length,
-        successful: batchResults.filter(r => r.success).length,
-        failed: batchResults.filter(r => !r.success).length,
-        results: batchResults,
-        analyzedAt: new Date().toISOString()
-      });
-    }
-    
-    if (!text || typeof text !== 'string') {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Text is required and must be a string' 
-      });
-    }
-
-    console.log(`🧠 Mood analysis requested for ${analyzeFor}:`, text.substring(0, 100) + '...');
-
-    if (!sentimentAnalyzer) {
-      console.log("⚠️ DistilBERT not loaded, using simple analysis");
-      const simpleResult = analyzeSentimentSimple(text, analyzeFor);
-      return res.json({
-        success: true,
-        ...simpleResult,
-        modelUsed: 'simple',
-        analyzedAt: new Date().toISOString()
-      });
-    }
-
-    const distilbertResult = await sentimentAnalyzer(text);
-    const mainResult = distilbertResult[0];
-    const label = mainResult.label;
-    const score = mainResult.score;
-    
-    console.log(`📊 DistilBERT result: ${label} (${score.toFixed(4)})`);
-    
-    const enhancedAnalysis = enhanceWithHealthcareContext(text, label, score, analyzeFor);
-    
-    res.json({
-      success: true,
-      ...enhancedAnalysis,
-      modelUsed: 'distilbert',
-      analyzedAt: new Date().toISOString(),
-      textPreview: text.substring(0, 50) + (text.length > 50 ? '...' : ''),
-      textLength: text.length
-    });
-    
-  } catch (error) {
-    console.error("❌ Mood analysis error:", error);
-    const simpleResult = analyzeSentimentSimple(req.body?.text || '', req.body?.analyzeFor || 'user');
-    res.json({
-      success: true,
-      ...simpleResult,
-      modelUsed: 'simple-fallback',
-      note: 'DistilBERT failed, using simple analysis',
-      analyzedAt: new Date().toISOString()
-    });
-  }
-});
-
-/* ================================
-   🔄 BATCH MOOD ANALYSIS ENDPOINT
-=================================*/
-app.post("/api/mood/batch", async (req, res) => {
-  try {
-    const { 
-      messages, 
-      conversationId, 
-      userId,
-      analysisType = 'comprehensive'
-    } = req.body;
-    
-    if (!messages || !Array.isArray(messages) || messages.length === 0) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Messages array is required and must not be empty' 
-      });
-    }
-
-    console.log(`🧠 Batch analysis requested for ${messages.length} messages`);
-    console.log(`📊 Analysis type: ${analysisType}, Conversation: ${conversationId || 'N/A'}`);
-
-    const individualResults = [];
-    let processedCount = 0;
-    const batchSize = 5;
-    const batches = [];
-    
-    for (let i = 0; i < messages.length; i += batchSize) {
-      batches.push(messages.slice(i, i + batchSize));
-    }
-
-    for (const [batchIndex, batch] of batches.entries()) {
-      console.log(`📦 Processing batch ${batchIndex + 1}/${batches.length} (${batch.length} messages)`);
-      
-      const batchText = batch.map(msg => msg.text).join('\n---\n');
-      
-      try {
-        let batchResult;
-        if (sentimentAnalyzer) {
-          const distilbertResult = await sentimentAnalyzer(batchText);
-          const mainResult = distilbertResult[0];
-          const batchEnhancedAnalysis = enhanceWithHealthcareContext(
-            batchText, 
-            mainResult.label, 
-            mainResult.score, 
-            'user'
-          );
-          batchResult = {
-            moodScore: batchEnhancedAnalysis.moodScore,
-            confidence: batchEnhancedAnalysis.confidence,
-            stressScore: batchEnhancedAnalysis.stressScore,
-            emotion: batchEnhancedAnalysis.emotion,
-            isCrisis: batchEnhancedAnalysis.isCrisis,
-            analyzedAt: new Date().toISOString()
-          };
-        } else {
-          const batchEnhancedAnalysis = analyzeSentimentSimple(batchText, 'user');
-          batchResult = {
-            moodScore: batchEnhancedAnalysis.moodScore,
-            confidence: batchEnhancedAnalysis.confidence || 0.7,
-            stressScore: batchEnhancedAnalysis.stressScore,
-            emotion: batchEnhancedAnalysis.emotion,
-            isCrisis: batchEnhancedAnalysis.isCrisis,
-            analyzedAt: new Date().toISOString()
-          };
-        }
-
-        for (const [msgIndex, message] of batch.entries()) {
-          let individualAnalysis;
-          if (sentimentAnalyzer) {
-            try {
-              const individualResult = await sentimentAnalyzer(message.text);
-              const mainIndividualResult = individualResult[0];
-              individualAnalysis = enhanceWithHealthcareContext(
-                message.text, 
-                mainIndividualResult.label, 
-                mainIndividualResult.score, 
-                message.analyzeFor || 'user'
-              );
-            } catch (indError) {
-              console.warn('Individual analysis failed, using adjusted batch result:', indError.message);
-              const textLower = message.text.toLowerCase();
-              let adjustedMoodScore = batchResult.moodScore;
-              let adjustedStressScore = batchResult.stressScore;
-              let adjustedEmotion = batchResult.emotion;
-              
-              if (textLower.includes('anxious') || textLower.includes('worried')) {
-                adjustedEmotion = 'anxious';
-                adjustedStressScore = Math.min(1, batchResult.stressScore + 0.2);
-              }
-              
-              if (textLower.includes('pain') || textLower.includes('hurt')) {
-                adjustedEmotion = textLower.includes('unbearable') ? 'high-stress' : 'stressed';
-                adjustedStressScore = Math.min(1, batchResult.stressScore + 0.3);
-              }
-              
-              if (textLower.includes('good') || textLower.includes('great') || textLower.includes('fine')) {
-                adjustedEmotion = 'positive';
-                adjustedStressScore = Math.max(0, batchResult.stressScore - 0.2);
-              }
-              
-              const crisisKeywords = ['suicide', 'kill myself', 'want to die', 'end my life'];
-              const hasCrisisKeyword = crisisKeywords.some(keyword => textLower.includes(keyword));
-              
-              if (hasCrisisKeyword) {
-                adjustedEmotion = 'crisis';
-                adjustedStressScore = 0.95;
-              }
-              
-              individualAnalysis = {
-                moodScore: adjustedMoodScore,
-                stressScore: adjustedStressScore,
-                emotion: adjustedEmotion,
-                isCrisis: hasCrisisKeyword || (adjustedStressScore > 0.85 && adjustedMoodScore < -0.6),
-                confidence: batchResult.confidence * 0.9,
-                healthcareContext: {
-                  hasCrisisKeyword,
-                  hasUrgency: textLower.includes('urgent') || textLower.includes('emergency'),
-                  mentionsPain: textLower.includes('pain') || textLower.includes('hurt'),
-                  mentionsMedication: textLower.includes('medication') || textLower.includes('pill'),
-                  wordCount: message.text.split(' ').length,
-                  hasQuestion: message.text.includes('?'),
-                  hasExclamation: message.text.includes('!'),
-                  allCapsRatio: (message.text.match(/[A-Z]/g)?.length || 0) / message.text.length || 0
-                },
-                suggestedResponseTone: getEnhancedSuggestedTone(
-                  adjustedMoodScore,
-                  adjustedStressScore,
-                  hasCrisisKeyword || (adjustedStressScore > 0.85 && adjustedMoodScore < -0.6),
-                  'user',
-                  0.5,
-                  textLower.includes('pain') || textLower.includes('hurt'),
-                  textLower.includes('medication') || textLower.includes('pill')
-                ),
-                modelUsed: 'distilbert-fallback',
-                analyzedAt: new Date().toISOString()
-              };
-            }
-          } else {
-            individualAnalysis = analyzeSentimentSimple(message.text, message.analyzeFor || 'user');
-          }
-          
-          const stressVariation = message.text.includes('?') ? 0.1 : 
-                                message.text.includes('!') ? 0.08 : 0;
-          const adjustedStressScore = Math.min(1, 
-            individualAnalysis.stressScore + stressVariation
-          );
-          
-          individualResults.push({
-            messageId: message.id || `batch-${batchIndex}-${msgIndex}`,
-            textPreview: message.text.substring(0, 50) + 
-                       (message.text.length > 50 ? '...' : ''),
-            textLength: message.text.length,
-            timestamp: message.timestamp || new Date().toISOString(),
-            isUser: message.isUser !== false,
-            analysis: {
-              moodScore: parseFloat(individualAnalysis.moodScore.toFixed(3)),
-              stressScore: parseFloat(adjustedStressScore.toFixed(3)),
-              emotion: individualAnalysis.emotion,
-              isCrisis: individualAnalysis.isCrisis,
-              confidence: parseFloat((individualAnalysis.confidence || 0.7).toFixed(3)),
-              healthcareContext: individualAnalysis.healthcareContext,
-              suggestedResponseTone: individualAnalysis.suggestedResponseTone,
-              modelUsed: individualAnalysis.modelUsed || (sentimentAnalyzer ? 'distilbert' : 'simple'),
-              analyzedAt: new Date().toISOString(),
-              isBatchAnalyzed: true,
-              batchId: batchIndex
-            }
-          });
-          
-          processedCount++;
-        }
-        
-        console.log(`✅ Batch ${batchIndex + 1} processed: ${processedCount}/${messages.length} messages`);
-        
-      } catch (batchError) {
-        console.error(`❌ Error processing batch ${batchIndex + 1}:`, batchError.message);
-        for (const message of batch) {
-          const simpleAnalysis = analyzeSentimentSimple(message.text, 'user');
-          individualResults.push({
-            messageId: message.id || `fallback-${Date.now()}-${Math.random()}`,
-            textPreview: message.text.substring(0, 30) + '...',
-            analysis: {
-              moodScore: simpleAnalysis.moodScore,
-              stressScore: simpleAnalysis.stressScore,
-              emotion: simpleAnalysis.emotion,
-              isCrisis: simpleAnalysis.isCrisis,
-              confidence: simpleAnalysis.confidence,
-              healthcareContext: simpleAnalysis.healthcareContext,
-              suggestedResponseTone: getSuggestedTone(
-                simpleAnalysis.moodScore,
-                simpleAnalysis.stressScore,
-                simpleAnalysis.isCrisis,
-                'user'
-              ),
-              modelUsed: 'simple-fallback',
-              analyzedAt: new Date().toISOString(),
-              isBatchAnalyzed: true,
-              isFallback: true,
-              batchId: batchIndex
-            }
-          });
-          processedCount++;
-        }
-      }
-      
-      if (batchIndex < batches.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
-    }
-
-    const conversationInsights = generateConversationInsights(individualResults, messages);
-
-    res.json({
-      success: true,
-      statistics: {
-        totalMessages: messages.length,
-        analyzedMessages: processedCount,
-        failedMessages: messages.length - processedCount,
-        batchCount: batches.length,
-        averageProcessingTime: (processedCount / batches.length).toFixed(2)
-      },
-      individualResults,
-      conversationInsights,
-      metadata: {
-        analysisType,
-        conversationId,
-        userId,
-        analyzedAt: new Date().toISOString(),
-        modelUsed: sentimentAnalyzer ? 'distilbert-enhanced-batch' : 'simple-enhanced-batch',
-        version: '2.0'
-      }
-    });
-    
-  } catch (error) {
-    console.error("❌ Batch analysis error:", error);
-    res.status(500).json({
-      success: false,
-      error: 'Batch analysis failed',
-      details: error.message,
-      fallback: {
-        note: 'Using simplified analysis',
-        analyzedAt: new Date().toISOString()
-      }
-    });
-  }
-});
-
-/* ===============================
-   🏥 ENHANCED HEALTHCARE CONTEXT FUNCTIONS
-=================================*/
-
-function enhanceWithHealthcareContext(text, distilbertLabel, distilbertScore, analyzeFor) {
-  const textLower = text.toLowerCase();
-  const isPositive = distilbertLabel === 'POSITIVE';
-  const moodScore = isPositive ? distilbertScore : -distilbertScore;
-  
-  let stressScore = calculateHealthcareStressScore(text, moodScore);
-  
-  if (moodScore > 0.7) {
-    stressScore *= 0.6;
-  } else if (moodScore > 0.3) {
-    stressScore *= 0.8;
-  }
-  
-  if (moodScore > 0.5 && text.includes('!')) {
-    stressScore *= 0.9;
-  }
-  
-  stressScore = Math.min(1, Math.max(0, stressScore));
-  
-  const crisisKeywords = [
-    'suicide', 'kill myself', 'end my life', 'want to die', 
-    'self harm', 'self-harm', 'cutting', 'overdose',
-    'panic attack', 'cant breathe', 'chest pain', 'emergency',
-    'help me', 'i give up', 'nothing matters'
-  ];
-  
-  const hasCrisisKeyword = crisisKeywords.some(keyword => textLower.includes(keyword));
-  const urgencyKeywords = ['urgent', 'emergency', '911', 'immediately', 'now', 'asap'];
-  const hasUrgency = urgencyKeywords.some(keyword => textLower.includes(keyword));
-  const painKeywords = ['pain', 'hurt', 'aching', 'sore', 'unbearable', 'excruciating'];
-  const mentionsPain = painKeywords.some(keyword => textLower.includes(keyword));
-  const medKeywords = ['medication', 'pill', 'drug', 'prescription', 'dose', 'tablet'];
-  const mentionsMedication = medKeywords.some(keyword => textLower.includes(keyword));
-  
-  const emotionKeywords = {
-    'anxious': ['anxious', 'worried', 'nervous', 'scared', 'afraid'],
-    'happy': ['happy', 'great', 'good', 'excellent', 'wonderful', 'amazing'],
-    'sad': ['sad', 'depressed', 'miserable', 'unhappy', 'hopeless'],
-    'angry': ['angry', 'mad', 'furious', 'upset', 'annoyed'],
-    'calm': ['calm', 'relaxed', 'peaceful', 'chill', 'serene'],
-    'stressed': ['stressed', 'overwhelmed', 'burned out', 'pressured'],
-    'frustrated': ['frustrated', 'annoyed', 'irritated', 'fed up']
-  };
-  
-  let keywordDetectedEmotion = null;
-  for (const [emotion, keywords] of Object.entries(emotionKeywords)) {
-    if (keywords.some(keyword => textLower.includes(keyword))) {
-      keywordDetectedEmotion = emotion;
-      break;
-    }
-  }
-  
-  let emotion;
-  if (keywordDetectedEmotion) {
-    emotion = keywordDetectedEmotion;
-  } else {
-    emotion = categorizeEmotionImproved(moodScore, stressScore, textLower, analyzeFor);
-  }
-  
-  let isCrisis = false;
-  if (analyzeFor === 'user') {
-    if (hasCrisisKeyword) {
-      isCrisis = true;
-    } else if (stressScore > 0.8 && moodScore < -0.6) {
-      isCrisis = true;
-    } else if (hasUrgency && mentionsPain && moodScore < -0.4) {
-      isCrisis = true;
-    } else if (keywordDetectedEmotion === 'sad' && stressScore > 0.7 && moodScore < -0.5) {
-      isCrisis = true;
-    }
-  }
-  
-  let confidence = distilbertScore;
-  if (mentionsPain || mentionsMedication || hasUrgency) {
-    confidence = Math.min(1, confidence * 1.1);
-  }
-  if (text.split(' ').length < 3) {
-    confidence *= 0.8;
-  }
-  
-  const wordCount = text.split(' ').length;
-  const exclamationCount = (text.match(/!/g) || []).length;
-  const questionCount = (text.match(/\?/g) || []).length;
-  const capsCount = (text.match(/[A-Z]/g) || []).length;
-  const capsRatio = capsCount / text.length || 0;
-  
-  const emotionalIntensity = Math.min(1, 
-    (exclamationCount * 0.2) + 
-    (capsRatio > 0.3 ? 0.3 : 0) + 
-    (wordCount > 50 ? 0.2 : 0)
-  );
-  
-  const suggestedTone = getEnhancedSuggestedTone(
-    moodScore, 
-    stressScore, 
-    isCrisis, 
-    analyzeFor,
-    emotionalIntensity,
-    mentionsPain,
-    mentionsMedication
-  );
-  
-  return {
-    moodScore: parseFloat(moodScore.toFixed(3)),
-    stressScore: parseFloat(stressScore.toFixed(3)),
-    emotion,
-    isCrisis,
-    confidence: parseFloat(confidence.toFixed(3)),
-    healthcareContext: {
-      hasCrisisKeyword,
-      hasUrgency,
-      mentionsPain,
-      mentionsMedication,
-      wordCount,
-      hasQuestion: questionCount > 0,
-      hasExclamation: exclamationCount > 0,
-      allCapsRatio: capsRatio,
-      exclamationCount,
-      questionCount,
-      emotionalIntensity: parseFloat(emotionalIntensity.toFixed(3)),
-      keywordDetectedEmotion,
-      containsPositiveKeywords: moodScore > 0.7 && (textLower.includes('good') || textLower.includes('great')),
-      containsNegativeKeywords: moodScore < -0.5 && (textLower.includes('bad') || textLower.includes('terrible'))
-    },
-    suggestedResponseTone: suggestedTone,
-    modelUsed: 'distilbert',
-    analyzedAt: new Date().toISOString(),
-    analysisType: analyzeFor === 'ai' ? 'ai_response' : 'user_input'
-  };
-}
-
-function calculateHealthcareStressScore(text, moodScore) {
-  const textLower = text.toLowerCase();
-  let stressScore = 0.5;
-  
-  if (moodScore < 0) {
-    stressScore += Math.abs(moodScore) * 0.4;
-  } else if (moodScore > 0.7) {
-    stressScore -= 0.2;
-  }
-  
-  if (textLower.includes('911')) stressScore += 0.4;
-  else if (textLower.includes('emergency')) stressScore += 0.3;
-  else if (textLower.includes('urgent')) stressScore += 0.2;
-  else if (textLower.includes('asap') || textLower.includes('immediately')) stressScore += 0.15;
-  
-  const severePainWords = ['unbearable', 'excruciating', 'severe'];
-  const moderatePainWords = ['pain', 'hurt', 'aching', 'sore'];
-  
-  if (severePainWords.some(word => textLower.includes(word))) stressScore += 0.3;
-  else if (moderatePainWords.some(word => textLower.includes(word))) stressScore += 0.15;
-  
-  const medicalWords = ['hospital', 'doctor', 'clinic', 'er', 'emergency room'];
-  if (medicalWords.some(word => textLower.includes(word))) stressScore += 0.1;
-  
-  const exclamationCount = (text.match(/!/g) || []).length;
-  const questionCount = (text.match(/\?/g) || []).length;
-  
-  if (exclamationCount >= 3) stressScore += 0.25;
-  else if (exclamationCount === 2) stressScore += 0.15;
-  else if (exclamationCount === 1) stressScore += 0.08;
-  
-  if (questionCount >= 3) stressScore += 0.15;
-  
-  if (text.length > 200) stressScore += 0.1;
-  
-  const capsCount = (text.match(/[A-Z]/g) || []).length;
-  const capsRatio = capsCount / text.length;
-  if (capsRatio > 0.5) stressScore += 0.15;
-  else if (capsRatio > 0.3) stressScore += 0.1;
-  
-  const highStressWords = ['panic', 'anxiety', 'overwhelmed', 'cant cope', 'breaking down'];
-  const mediumStressWords = ['worried', 'scared', 'nervous', 'stressed', 'anxious'];
-  
-  if (highStressWords.some(word => textLower.includes(word))) stressScore += 0.25;
-  else if (mediumStressWords.some(word => textLower.includes(word))) stressScore += 0.15;
-  
-  return Math.min(1, Math.max(0, stressScore));
-}
-
-function categorizeEmotionImproved(moodScore, stressScore, textLower, analyzeFor) {
-  if (analyzeFor === 'ai') {
-    if (moodScore > 0.8) return 'empathetic';
-    if (moodScore > 0.5) return 'supportive';
-    if (moodScore > 0.2) return 'encouraging';
-    if (moodScore > -0.2) return 'neutral';
-    if (moodScore > -0.5) return 'concerned';
-    if (moodScore > -0.8) return 'urgent';
-    return 'crisis';
-  }
-  
-  if (stressScore > 0.9 && moodScore < -0.8) return 'crisis';
-  if (stressScore > 0.85) return 'high-stress';
-  
-  if (stressScore > 0.6 && moodScore > 0.3) return 'excited';
-  if (stressScore > 0.6 && moodScore >= 0) return 'concerned';
-  if (stressScore > 0.6 && moodScore < 0) return 'stressed';
-  
-  if (moodScore > 0.85) return 'very-positive';
-  if (moodScore > 0.7) return 'positive';
-  if (moodScore > 0.5) return 'slightly-positive';
-  if (moodScore > 0.3) return 'calm';
-  if (moodScore > -0.3) return 'neutral';
-  if (moodScore > -0.6) return 'slightly-negative';
-  if (moodScore > -0.8) return 'negative';
-  
-  return 'very-negative';
-}
-
-function getEnhancedSuggestedTone(moodScore, stressScore, isCrisis, analyzeFor, emotionalIntensity, mentionsPain, mentionsMedication) {
-  if (isCrisis) {
-    return {
-      tone: 'CRISIS_INTERVENTION',
-      priority: 'HIGHEST',
-      action: 'PROVIDE_EMERGENCY_RESOURCES',
-      empathyLevel: 'VERY_HIGH',
-      responseSpeed: 'IMMEDIATE',
-      responseLength: 'SHORT_DIRECT',
-      focus: 'SAFETY_AND_SUPPORT'
-    };
-  }
-  
-  if (stressScore > 0.9) {
-    return {
-      tone: 'EXTREME_CALMING',
-      priority: 'VERY_HIGH',
-      action: 'CALM_DECREASE_STRESS',
-      empathyLevel: 'VERY_HIGH',
-      responseSpeed: 'FAST',
-      responseLength: 'CONCISE',
-      focus: 'STRESS_REDUCTION'
-    };
-  }
-  
-  if (stressScore > 0.8) {
-    return {
-      tone: 'CALM_REASSURING',
-      priority: 'HIGH',
-      action: 'REASSURE_AND_SUPPORT',
-      empathyLevel: 'HIGH',
-      responseSpeed: 'FAST',
-      responseLength: 'MODERATE',
-      focus: 'EMOTIONAL_SUPPORT'
-    };
-  }
-  
-  if (mentionsPain && moodScore < 0) {
-    return {
-      tone: 'CARING_PAIN_FOCUSED',
-      priority: 'HIGH',
-      action: 'ACKNOWLEDGE_PAIN_OFFER_SUPPORT',
-      empathyLevel: 'HIGH',
-      responseSpeed: 'FAST',
-      responseLength: 'MODERATE',
-      focus: 'PAIN_MANAGEMENT'
-    };
-  }
-  
-  if (mentionsMedication && stressScore > 0.5) {
-    return {
-      tone: 'PROFESSIONAL_CAREFUL',
-      priority: 'MEDIUM_HIGH',
-      action: 'PROVIDE_ACCURATE_INFO',
-      empathyLevel: 'MEDIUM_HIGH',
-      responseSpeed: 'NORMAL',
-      responseLength: 'DETAILED',
-      focus: 'MEDICATION_SAFETY'
-    };
-  }
-  
-  if (moodScore < -0.6) {
-    return {
-      tone: 'EMPATHETIC_VALIDATING',
-      priority: 'MEDIUM_HIGH',
-      action: 'VALIDATE_EMOTIONS',
-      empathyLevel: 'HIGH',
-      responseSpeed: 'NORMAL',
-      responseLength: 'MODERATE',
-      focus: 'EMOTIONAL_VALIDATION'
-    };
-  }
-  
-  if (moodScore < -0.3) {
-    return {
-      tone: 'SUPPORTIVE_HELPFUL',
-      priority: 'MEDIUM',
-      action: 'OFFER_SUPPORT_AND_HELP',
-      empathyLevel: 'MEDIUM_HIGH',
-      responseSpeed: 'NORMAL',
-      responseLength: 'MODERATE',
-      focus: 'PROBLEM_SOLVING'
-    };
-  }
-  
-  if (moodScore > 0.7) {
-    return {
-      tone: 'POSITIVE_ENGAGING',
-      priority: 'LOW',
-      action: 'ENGAGE_AND_CELEBRATE',
-      empathyLevel: 'MEDIUM',
-      responseSpeed: 'NORMAL',
-      responseLength: 'MODERATE',
-      focus: 'POSITIVE_REINFORCEMENT'
-    };
-  }
-  
-  return {
-    tone: 'NEUTRAL_HELPFUL',
-    priority: 'LOW',
-    action: 'PROVIDE_INFORMATION',
-    empathyLevel: 'MEDIUM',
-    responseSpeed: 'NORMAL',
-    responseLength: 'VARIABLE',
-    focus: 'INFORMATION_PROVISION'
-  };
-}
-
-/* ===============================
-   📊 HELPER FUNCTIONS (OLD - KEPT FOR BACKWARD COMPATIBILITY)
-=================================*/
-
-function categorizeEmotion(moodScore, stressScore, analyzeFor) {
-  if (analyzeFor === 'ai') {
-    if (moodScore > 0.7) return 'empathetic';
-    if (moodScore > 0.3) return 'supportive';
-    if (moodScore > -0.3) return 'neutral';
-    if (moodScore > -0.7) return 'concerned';
-    return 'urgent';
-  }
-  
-  if (stressScore > 0.8 && moodScore < -0.7) return 'crisis';
-  if (stressScore > 0.6) return 'high-stress';
-  if (moodScore > 0.7) return 'positive';
-  if (moodScore > 0.3) return 'calm';
-  if (moodScore > -0.3) return 'neutral';
-  if (moodScore > -0.7) return 'worried';
-  return 'distressed';
-}
-
-function getSuggestedTone(moodScore, stressScore, isCrisis, analyzeFor) {
-  if (isCrisis) {
-    return {
-      tone: 'CRISIS_INTERVENTION',
-      priority: 'HIGHEST',
-      action: 'PROVIDE_EMERGENCY_RESOURCES',
-      empathyLevel: 'VERY_HIGH',
-      responseSpeed: 'IMMEDIATE'
-    };
-  }
-  
-  if (stressScore > 0.8) {
-    return {
-      tone: 'URGENT_CARING',
-      priority: 'HIGH',
-      action: 'CALM_AND_REASSURE',
-      empathyLevel: 'HIGH',
-      responseSpeed: 'FAST'
-    };
-  }
-  
-  if (moodScore < -0.5) {
-    return {
-      tone: 'EMPATHETIC_SUPPORTIVE',
-      priority: 'MEDIUM_HIGH',
-      action: 'VALIDATE_AND_COMFORT',
-      empathyLevel: 'HIGH',
-      responseSpeed: 'NORMAL'
-    };
-  }
-  
-  if (moodScore < 0) {
-    return {
-      tone: 'CARING_PROFESSIONAL',
-      priority: 'MEDIUM',
-      action: 'ACKNOWLEDGE_AND_HELP',
-      empathyLevel: 'MEDIUM_HIGH',
-      responseSpeed: 'NORMAL'
-    };
-  }
-  
-  return {
-    tone: 'NEUTRAL_HELPFUL',
-    priority: 'LOW',
-    action: 'PROVIDE_INFORMATION',
-    empathyLevel: 'MEDIUM',
-    responseSpeed: 'NORMAL'
-  };
-}
-
-/* ================================
-   🧠 CONVERSATION INSIGHTS FUNCTIONS
-=================================*/
-
-function generateConversationInsights(individualResults, originalMessages) {
-  if (!individualResults || individualResults.length === 0) {
-    return {
-      moodTrend: 'unknown',
-      dominantEmotions: [],
-      crisisProbability: 0,
-      recommendations: [],
-      summary: 'No messages analyzed'
-    };
-  }
-
-  const validMoodScores = individualResults
-    .filter(r => r.analysis && r.analysis.moodScore !== undefined)
-    .map(r => r.analysis.moodScore);
-  
-  const validStressScores = individualResults
-    .filter(r => r.analysis && r.analysis.stressScore !== undefined)
-    .map(r => r.analysis.stressScore);
-
-  const avgMood = validMoodScores.length > 0 
-    ? validMoodScores.reduce((a, b) => a + b, 0) / validMoodScores.length 
-    : 0;
-  
-  const avgStress = validStressScores.length > 0
-    ? validStressScores.reduce((a, b) => a + b, 0) / validStressScores.length
-    : 0.5;
-
-  const emotionCounts = {};
-  individualResults.forEach(result => {
-    if (result.analysis && result.analysis.emotion) {
-      const emotion = result.analysis.emotion;
-      emotionCounts[emotion] = (emotionCounts[emotion] || 0) + 1;
-    }
-  });
-
-  const dominantEmotions = Object.entries(emotionCounts)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 3)
-    .map(([emotion, count]) => ({ emotion, count, percentage: (count / individualResults.length * 100).toFixed(1) }));
-
-  const crisisMessages = individualResults.filter(r => r.analysis && r.analysis.isCrisis);
-  const crisisProbability = Math.min(1, crisisMessages.length / individualResults.length);
-
-  let moodTrend = 'stable';
-  if (validMoodScores.length >= 4) {
-    const half = Math.floor(validMoodScores.length / 2);
-    const firstHalfAvg = validMoodScores.slice(0, half).reduce((a, b) => a + b, 0) / half;
-    const secondHalfAvg = validMoodScores.slice(half).reduce((a, b) => a + b, 0) / (validMoodScores.length - half);
-    
-    if (secondHalfAvg - firstHalfAvg > 0.3) moodTrend = 'improving';
-    else if (firstHalfAvg - secondHalfAvg > 0.3) moodTrend = 'worsening';
-  }
-
-  const recommendations = generateRecommendations(
-    avgMood, 
-    avgStress, 
-    crisisProbability, 
-    moodTrend,
-    dominantEmotions
-  );
-
-  const summary = generateInsightSummary(
-    avgMood,
-    avgStress,
-    moodTrend,
-    crisisMessages.length,
-    individualResults.length
-  );
-
-  return {
-    moodTrend,
-    averageMood: parseFloat(avgMood.toFixed(3)),
-    averageStress: parseFloat(avgStress.toFixed(3)),
-    dominantEmotions,
-    crisisProbability: parseFloat(crisisProbability.toFixed(3)),
-    crisisCount: crisisMessages.length,
-    messageCount: individualResults.length,
-    recommendations,
-    summary,
-    keyMetrics: {
-      veryPositiveMessages: validMoodScores.filter(s => s > 0.7).length,
-      veryNegativeMessages: validMoodScores.filter(s => s < -0.7).length,
-      highStressMessages: validStressScores.filter(s => s > 0.8).length,
-      questionsAsked: originalMessages.filter(m => m.text && m.text.includes('?')).length,
-      averageMessageLength: Math.round(originalMessages.reduce((sum, m) => sum + (m.text?.length || 0), 0) / originalMessages.length)
-    }
-  };
-}
-
-function generateRecommendations(avgMood, avgStress, crisisProbability, moodTrend, dominantEmotions) {
-  const recommendations = [];
-
-  if (crisisProbability > 0.3) {
-    recommendations.push({
-      priority: 'HIGHEST',
-      action: 'IMMEDIATE_CRISIS_INTERVENTION',
-      description: 'Multiple crisis indicators detected. Provide emergency resources immediately.',
-      resources: [
-        '988 Suicide & Crisis Lifeline',
-        'Emergency: 911',
-        'Local mental health services',
-        'Crisis text line: Text HOME to 741741'
-      ]
-    });
-  }
-
-  if (avgStress > 0.7) {
-    recommendations.push({
-      priority: 'HIGH',
-      action: 'STRESS_MANAGEMENT_SUPPORT',
-      description: 'High stress levels detected. Provide calming techniques and stress management resources.',
-      suggestions: [
-        'Breathing exercises (4-7-8 technique)',
-        'Progressive muscle relaxation',
-        'Mindfulness meditation guidance',
-        'Referral to stress management program'
-      ]
-    });
-  }
-
-  if (avgMood < -0.5) {
-    recommendations.push({
-      priority: 'HIGH',
-      action: 'EMOTIONAL_SUPPORT_ENGAGEMENT',
-      description: 'Consistently negative mood detected. Increase emotional support and check-in frequency.',
-      suggestions: [
-        'Schedule regular check-ins',
-        'Provide empathetic validation',
-        'Offer positive reinforcement',
-        'Suggest mood tracking journal'
-      ]
-    });
-  }
-
-  const dominantEmotion = dominantEmotions[0]?.emotion;
-  if (dominantEmotion === 'anxious' || dominantEmotion === 'stressed') {
-    recommendations.push({
-      priority: 'MEDIUM',
-      action: 'ANXIETY_REDUCTION_STRATEGIES',
-      description: 'Anxiety is a dominant emotion. Provide anxiety-reducing techniques.',
-      suggestions: [
-        'Grounding techniques (5-4-3-2-1 method)',
-        'Worry time allocation',
-        'Cognitive restructuring exercises',
-        'Relaxation audio guides'
-      ]
-    });
-  }
-
-  if (moodTrend === 'worsening') {
-    recommendations.push({
-      priority: 'MEDIUM_HIGH',
-      action: 'TREND_INTERVENTION',
-      description: 'Mood trend is worsening. Consider proactive intervention.',
-      suggestions: [
-        'Increase monitoring frequency',
-        'Engage support network',
-        'Consider professional referral',
-        'Adjust response strategy to more supportive tone'
-      ]
-    });
-  }
-
-  if (recommendations.length === 0) {
-    recommendations.push({
-      priority: 'LOW',
-      action: 'WELLNESS_MAINTENANCE',
-      description: 'Conversation appears stable. Continue supportive engagement.',
-      suggestions: [
-        'Maintain regular check-ins',
-        'Provide health education materials',
-        'Encourage healthy habits',
-        'Celebrate small victories'
-      ]
-    });
-  }
-
-  return recommendations;
-}
-
-function generateInsightSummary(avgMood, avgStress, moodTrend, crisisCount, totalMessages) {
-  const moodDescriptors = {
-    'improving': 'improving',
-    'worsening': 'declining',
-    'stable': 'stable'
-  };
-
-  const stressLevel = avgStress < 0.3 ? 'low' : 
-                     avgStress < 0.6 ? 'moderate' : 
-                     avgStress < 0.8 ? 'high' : 'very high';
-
-  const moodLevel = avgMood > 0.7 ? 'very positive' :
-                   avgMood > 0.3 ? 'positive' :
-                   avgMood > -0.3 ? 'neutral' :
-                   avgMood > -0.7 ? 'negative' : 'very negative';
-
-  let summary = `Analysis of ${totalMessages} messages shows ${moodLevel} mood with ${stressLevel} stress levels. `;
-  summary += `Overall emotional tone is ${moodDescriptors[moodTrend] || 'stable'}. `;
-  
-  if (crisisCount > 0) {
-    summary += `⚠️ ${crisisCount} crisis ${crisisCount === 1 ? 'message was' : 'messages were'} detected. `;
-  }
-  
-  if (avgStress > 0.7) {
-    summary += `High stress indicators suggest benefit from stress management support. `;
-  }
-  
-  if (avgMood < -0.5) {
-    summary += `Negative mood patterns indicate potential need for increased emotional support.`;
-  }
-
-  return summary.trim();
-}
-
-function analyzeSentimentSimple(text, analyzeFor) {
-  const textLower = text.toLowerCase();
-  const positiveWords = ['good', 'great', 'better', 'improving', 'thanks', 'thank', 'happy', 'relieved', 'well', 'okay'];
-  const negativeWords = ['bad', 'terrible', 'worse', 'pain', 'hurt', 'anxious', 'worried', 'scared', 'depressed', 'sick'];
-  const crisisWords = ['suicide', 'kill myself', 'end my life', 'want to die', 'self harm', 'overdose'];
-  
-  const positiveCount = positiveWords.filter(word => textLower.includes(word)).length;
-  const negativeCount = negativeWords.filter(word => textLower.includes(word)).length;
-  const hasCrisisWord = crisisWords.some(word => textLower.includes(word));
-  
-  let moodScore = 0;
-  if (positiveCount > negativeCount) {
-    moodScore = 0.5 + (positiveCount * 0.1);
-  } else if (negativeCount > positiveCount) {
-    moodScore = -0.5 - (negativeCount * 0.1);
-  }
-  
-  moodScore = Math.max(-1, Math.min(1, moodScore));
-  const stressScore = Math.min(1, negativeCount * 0.2 + (text.length > 100 ? 0.3 : 0));
-  
-  return {
-    moodScore: parseFloat(moodScore.toFixed(3)),
-    stressScore: parseFloat(stressScore.toFixed(3)),
-    emotion: categorizeEmotion(moodScore, stressScore, analyzeFor),
-    isCrisis: hasCrisisWord || (analyzeFor === 'user' && stressScore > 0.8),
-    confidence: 0.7,
-    healthcareContext: {
-      hasCrisisKeyword: hasCrisisWord,
-      hasUrgency: textLower.includes('urgent') || textLower.includes('emergency'),
-      mentionsPain: textLower.includes('pain') || textLower.includes('hurt'),
-      mentionsMedication: textLower.includes('medication') || textLower.includes('pill'),
-      wordCount: text.split(' ').length
-    }
-  };
-}
-
-/* ================================
-   📊 BATCH STATUS ENDPOINT
-=================================*/
-app.get("/api/mood/batch/status/:batchId", async (req, res) => {
-  const { batchId } = req.params;
-  res.json({
-    success: true,
-    batchId,
-    status: 'completed',
-    processedAt: new Date().toISOString(),
-    estimatedAccuracy: '85-95%',
-    note: 'Batch analysis completed successfully'
-  });
-});
+app.use("/api", moodRoutes);
 
 /* ===============================
    📋 GEMINI MODELS
@@ -1127,30 +102,102 @@ app.post("/api/chat", async (req, res) => {
   }
 });
 
-/* ===============================
-   📊 INSIGHTS
-=================================*/
+// Updated insights endpoint with enhanced context
 app.post("/api/insights", async (req, res) => {
   try {
-    const { stats, logs } = req.body;
-    const summaryPrompt = `
-      You are a medication adherence coach.
-      Based on these stats: ${JSON.stringify(stats)}
-      and logs: ${logs
-        .map((log) => `${log.medicationName} - ${log.status}`)
-        .join(", ")}
-      Write a short, encouraging summary (≤3 sentences).
-      Focus on patterns, improvements, and suggestions.
-    `;
-    const completion = await groq.chat.completions.create({
-      model: "llama-3.1-8b-instant",
-      messages: [{ role: "user", content: summaryPrompt }],
-    });
-    const message = completion.choices[0]?.message?.content || "No insights available.";
-    res.json({ insight: message });
+    const { stats, logs, user_profile, compliance_insights, compliance_records } = req.body;
+    
+    // If compliance_records are provided, use enhanced analysis
+    if (compliance_records && Array.isArray(compliance_records) && compliance_records.length > 0) {
+      console.log(`🧠 Using enhanced analysis for ${compliance_records.length} records`);
+      
+      const patternAnalysis = patternDetector.analyzeComplianceData(compliance_records);
+      
+      const enhancedPrompt = `
+        You are a clinical AI assistant analyzing medication adherence patterns.
+        
+        PATIENT PROFILE:
+        • ${user_profile?.name || 'User'}
+        • Medications: ${patternAnalysis.medication_count || 'Unknown'}
+        • Average adherence: ${stats?.adherence || 0}%
+        • Records analyzed: ${compliance_records.length}
+        
+        DETECTED PATTERNS:
+        ${patternAnalysis.patterns.map(p => `• ${p}`).join('\n') || 'No specific patterns detected'}
+        
+        IDENTIFIED RISK FACTORS:
+        ${patternAnalysis.risk_factors.map(f => `• ${f}`).join('\n') || 'No significant risk factors'}
+        
+        RECENT EVENTS:
+        ${logs ? logs.slice(0, 3).map(log => 
+          `• ${new Date(log.createdAt).toLocaleDateString()}: ${log.medicationName} - ${log.status}`
+        ).join('\n') : 'No recent events'}
+        
+        TASK: Provide a personalized, actionable insights summary that:
+        1. Highlights 1-2 key patterns observed
+        2. Suggests 1 practical improvement strategy
+        3. Acknowledges positive trends if present
+        4. Uses encouraging, clinical tone
+        5. Keep it under 150 words
+      `;
+      
+      const completion = await groq.chat.completions.create({
+        model: "llama-3.1-8b-instant",
+        messages: [{ role: "user", content: enhancedPrompt }],
+        temperature: 0.3,
+      });
+      
+      const message = completion.choices[0]?.message?.content || "No insights available.";
+      
+      res.json({ 
+        insight: message,
+        patterns: patternAnalysis.patterns,
+        risk_factors: patternAnalysis.risk_factors,
+        generated_at: new Date().toISOString(),
+        model_used: "llama-3.1-8b-instant",
+        confidence: compliance_records.length >= 10 ? "high" : "medium",
+        source: "enhanced_llm_analysis",
+        analysis_metadata: {
+          records_analyzed: compliance_records.length,
+          medication_count: patternAnalysis.medication_count
+        }
+      });
+      
+    } else {
+      // Fallback to original simple insights
+      console.log(`🧠 Using basic insights (no compliance records provided)`);
+      
+      const summaryPrompt = `
+        You are a medication adherence coach.
+        Based on these stats: ${JSON.stringify(stats)}
+        and logs: ${logs
+          .map((log) => `${log.medicationName} - ${log.status}`)
+          .join(", ")}
+        Write a short, encouraging summary (≤3 sentences).
+        Focus on patterns, improvements, and suggestions.
+      `;
+      
+      const completion = await groq.chat.completions.create({
+        model: "llama-3.1-8b-instant",
+        messages: [{ role: "user", content: summaryPrompt }],
+      });
+      
+      const message = completion.choices[0]?.message?.content || "No insights available.";
+      
+      res.json({ 
+        insight: message,
+        generated_at: new Date().toISOString(),
+        source: "basic_llm_analysis",
+        note: "For better insights, provide compliance_records"
+      });
+    }
+    
   } catch (error) {
     console.error("Insights error:", error);
-    res.status(500).json({ error: "Could not generate insights" });
+    res.status(500).json({ 
+      error: "Could not generate insights",
+      insight: "Unable to generate insights at this time. Please try again later."
+    });
   }
 });
 
@@ -1438,6 +485,200 @@ app.get("/api/test-gemini", async (req, res) => {
     });
   }
 });
+
+
+// Initialize pattern detector
+const patternDetector = new PatternDetector();
+
+/* ===============================
+   📊 PATTERN ANALYSIS ENDPOINT
+=================================*/
+app.post("/api/analyze-patterns", async (req, res) => {
+  try {
+    const { compliance_records, user_id, medication_ids } = req.body;
+    
+    if (!compliance_records || !Array.isArray(compliance_records)) {
+      return res.status(400).json({
+        success: false,
+        message: "compliance_records array is required",
+        patterns: [],
+        risk_factors: []
+      });
+    }
+    
+    console.log(`📊 Analyzing ${compliance_records.length} compliance records for patterns...`);
+    
+    // Analyze patterns
+    const analysis = patternDetector.analyzeComplianceData(compliance_records);
+    
+    // Add metadata
+    analysis.success = true;
+    analysis.analyzed_at = new Date().toISOString();
+    analysis.records_analyzed = compliance_records.length;
+    analysis.user_id = user_id || "anonymous";
+    analysis.medication_ids = medication_ids || [];
+    
+    console.log(`✅ Pattern analysis complete:`, {
+      patterns: analysis.patterns.length,
+      risk_factors: analysis.risk_factors.length,
+      confidence: compliance_records.length >= 20 ? "high" : "medium"
+    });
+    
+    res.json(analysis);
+    
+  } catch (error) {
+    console.error("❌ Pattern analysis error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Pattern analysis failed",
+      error: error.message,
+      patterns: [],
+      risk_factors: []
+    });
+  }
+});
+
+/* ===============================
+   🧠 ENHANCED INSIGHTS ENDPOINT
+=================================*/
+app.post("/api/enhanced-insights", async (req, res) => {
+  try {
+    const { compliance_records, stats, user_profile } = req.body;
+    
+    if (!compliance_records || !Array.isArray(compliance_records)) {
+      return res.status(400).json({
+        success: false,
+        message: "compliance_records array is required"
+      });
+    }
+    
+    console.log(`🧠 Generating enhanced insights for ${compliance_records.length} records...`);
+    
+    // Step 1: Pattern analysis
+    const patternAnalysis = patternDetector.analyzeComplianceData(compliance_records);
+    
+    // Step 2: Prepare enhanced prompt for LLM
+    const enhancedPrompt = createEnhancedPrompt(
+      compliance_records,
+      patternAnalysis,
+      stats,
+      user_profile
+    );
+    
+    // Step 3: Get LLM insights with patterns as context
+    const completion = await groq.chat.completions.create({
+      model: "llama-3.1-8b-instant",
+      messages: [
+        {
+          role: "system",
+          content: "You are a clinical AI assistant that analyzes medication adherence patterns. Provide actionable, personalized insights."
+        },
+        {
+          role: "user",
+          content: enhancedPrompt
+        }
+      ],
+      temperature: 0.3,
+      max_tokens: 300
+    });
+    
+    const llmInsight = completion.choices[0]?.message?.content || "No insights generated.";
+    
+    // Step 4: Combine results
+    const response = {
+      success: true,
+      insight: llmInsight,
+      patterns: patternAnalysis.patterns,
+      risk_factors: patternAnalysis.risk_factors,
+      analysis_metadata: {
+        records_analyzed: compliance_records.length,
+        medication_count: patternAnalysis.medication_count,
+        analysis_period: patternAnalysis.analysis_period,
+        generated_at: new Date().toISOString()
+      },
+      confidence: compliance_records.length >= 20 ? "high" : "medium",
+      data_quality: {
+        has_enough_data: compliance_records.length >= 10,
+        records_count: compliance_records.length,
+        recommendation: compliance_records.length < 10 ? 
+          "More data needed for personalized insights" : 
+          "Based on sufficient historical data"
+      }
+    };
+    
+    console.log(`✅ Enhanced insights generated`);
+    res.json(response);
+    
+  } catch (error) {
+    console.error("❌ Enhanced insights error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to generate enhanced insights",
+      error: error.message,
+      insight: "Unable to generate insights at this time. Please try again later."
+    });
+  }
+});
+
+// Helper function to create enhanced prompt
+function createEnhancedPrompt(compliance_records, patternAnalysis, stats, user_profile) {
+  // Calculate basic stats if not provided
+  let adherenceRate = 0;
+  let taken = 0;
+  let missed = 0;
+  
+  if (stats) {
+    adherenceRate = stats.adherence || 0;
+  } else {
+    taken = compliance_records.filter(r => r.actualAction === 'taken').length;
+    missed = compliance_records.filter(r => r.actualAction === 'missed').length;
+    const total = compliance_records.length;
+    adherenceRate = total > 0 ? (taken / total) * 100 : 0;
+  }
+  
+  const patternsText = patternAnalysis.patterns.length > 0 
+    ? patternAnalysis.patterns.map(p => `• ${p}`).join('\n')
+    : "No strong patterns detected";
+    
+  const risksText = patternAnalysis.risk_factors.length > 0
+    ? patternAnalysis.risk_factors.map(r => `• ${r}`).join('\n')
+    : "No significant risk factors identified";
+  
+  return `
+MEDICATION ADHERENCE ANALYSIS REQUEST
+
+PATIENT PROFILE:
+• Name: ${user_profile?.name || 'User'}
+• Medications tracked: ${patternAnalysis.medication_count}
+• Data period: ${patternAnalysis.analysis_period.start ? new Date(patternAnalysis.analysis_period.start).toLocaleDateString() : 'Unknown'} to ${patternAnalysis.analysis_period.end ? new Date(patternAnalysis.analysis_period.end).toLocaleDateString() : 'Unknown'}
+
+PERFORMANCE SUMMARY:
+• Total records analyzed: ${compliance_records.length}
+• Adherence rate: ${adherenceRate.toFixed(1)}%
+• Records: ${compliance_records.length} (Taken: ${taken}, Missed: ${missed})
+
+DETECTED PATTERNS:
+${patternsText}
+
+IDENTIFIED RISK FACTORS:
+${risksText}
+
+TASK:
+Provide a personalized, actionable insight that:
+1. Acknowledges 1-2 key patterns found
+2. Addresses the main risk factors
+3. Suggests 1 practical improvement strategy
+4. Uses encouraging, clinical tone
+5. Is concise (2-3 sentences max)
+
+Focus on being helpful, not judgmental. If data is limited, acknowledge that.
+  `;
+}
+
+
+
+
+
 
 /* ===============================
    ⚙️ SERVER STARTUP
